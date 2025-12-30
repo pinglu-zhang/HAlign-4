@@ -1,0 +1,25 @@
+package:
+  name: halign4
+  version: 1.1.2
+
+source:
+  path: ./HAlign-4
+
+build: 
+  number: 0
+
+requirements: 
+  build: 
+    - gcc >=9
+  run: 
+    - gcc >=9
+
+test:
+  commands:
+    - halign4 -h
+
+about: 
+  home: https://github.com/metaphysicser/HAlign-4
+  license: MIT
+  summary: "HAlign-4"
+  description: "HAlign 4: A New Strategy for Rapidly Aligning Millions of Sequences"
