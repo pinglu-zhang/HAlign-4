@@ -3,9 +3,11 @@
 //
 
 #include <iostream>
-#include <CLI/CLI.hpp>
+#include <config.hpp>
 #include <string>
-#include <cstdint>
+
+#include "../include/config.hpp"
+
 
 struct Options {
     std::string input;          // -i
@@ -58,6 +60,9 @@ static void setup_cli(CLI::App& app, Options& opt) {
 }
 
 int main(int argc, char** argv) {
+    spdlog::init_thread_pool(8192, 1);
+    setupLogger();
+
     Options opt;
     CLI::App app{"HAlign4"};
 
