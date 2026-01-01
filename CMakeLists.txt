@@ -11,11 +11,13 @@ list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/extern/seqan3/share/
 
 include_directories(
         ${PROJECT_SOURCE_DIR}/extern/seqan3/include
+        ${PROJECT_SOURCE_DIR}/extern/CLI11/include
 )
 
 # require seqan3 with a version between >=3.0.0 and <4.0.0
 find_package (seqan3 3.0 REQUIRED)
 
-add_executable(halign4 main.cpp)
+add_executable(halign4
+        src/halign4.cpp)
 
 target_link_libraries (halign4 seqan3::seqan3)
