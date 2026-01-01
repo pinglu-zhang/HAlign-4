@@ -8,6 +8,8 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <filesystem>
+#include <stdexcept>
 
 struct Options {
     std::string input;          // -i
@@ -50,7 +52,7 @@ static void setup_cli(CLI::App& app, Options& opt) {
 
     app.add_option("-t", opt.threads, "Number of threads")
         ->default_val(1)
-        ->check(CLI::Range(1, 1024));
+        ->check(CLI::Range(1, 100000));
 
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size")
         ->default_val(15)
@@ -112,24 +114,101 @@ static void logParsedOptions(const Options& opt) {
     spdlog::info("\n{}", oss.str());
 }
 
+// 新增：检查选项的合法性并处理 workdir（必须为空文件夹；如果不存在则创建）
+static void checkOption(const Options& opt) {
+    namespace fs = std::filesystem;
+
+    // input must exist
+    if (opt.input.empty()) {
+        throw std::runtime_error("input is empty");
+    }
+    if (!fs::exists(opt.input)) {
+        throw std::runtime_error("input file does not exist: " + opt.input);
+    }
+
+    // optional center_path must exist if provided
+    if (!opt.center_path.empty() && !fs::exists(opt.center_path)) {
+        throw std::runtime_error("center_path does not exist: " + opt.center_path);
+    }
+
+    // optional msa_cmd_path must exist if provided
+    if (!opt.msa_cmd_path.empty() && !fs::exists(opt.msa_cmd_path)) {
+        throw std::runtime_error("msa_cmd_path does not exist: " + opt.msa_cmd_path);
+    }
+
+    if (opt.threads <= 0) {
+        throw std::runtime_error("threads must be > 0");
+    }
+    if (opt.kmer_size <= 0) {
+        throw std::runtime_error("kmer_size must be > 0");
+    }
+
+    if (opt.workdir.empty()) {
+        throw std::runtime_error("workdir is empty");
+    }
+
+    fs::path wd{opt.workdir};
+
+    std::error_code ec;
+    if (!fs::exists(wd, ec)) {
+        // try to create
+        if (!fs::create_directories(wd, ec) || ec) {
+            throw std::runtime_error("failed to create workdir: " + opt.workdir + " (" + ec.message() + ")");
+        }
+        spdlog::info("Created workdir: {}", opt.workdir);
+    } else {
+        if (!fs::is_directory(wd, ec) || ec) {
+            throw std::runtime_error("workdir exists but is not a directory: " + opt.workdir);
+        }
+        // ensure empty
+        auto it = fs::directory_iterator(wd, ec);
+        if (ec) {
+            throw std::runtime_error("cannot read workdir: " + opt.workdir + " (" + ec.message() + ")");
+        }
+#ifndef _DEBUG
+        if (it != fs::end(it)) {
+            throw std::runtime_error("workdir must be empty: " + opt.workdir);
+        }
+#endif
+    }
+}
+
 int main(int argc, char** argv) {
-    spdlog::init_thread_pool(8192, 1);
-    setupLogger();
-    spdlog::info("Starting HAlign4...");
 
-    Options opt;
-    CLI::App app{"HAlign4"};
 
-    setup_cli(app, opt);
+    // 检验所有的参数是否合法，如果不合法打印并且退出
+    try
+    {
+        spdlog::init_thread_pool(8192, 1);
+        setupLogger();
+        spdlog::info("Starting halign4...");
 
-    // 关键：CLI11_PARSE 必须在返回 int 的函数里用（典型就是 main）
-    CLI11_PARSE(app, argc, argv);
+        Options opt;
+        CLI::App app{"halign4"};
 
-    // 解析成功后，opt 已被填充
-    logParsedOptions(opt);
+        setup_cli(app, opt);
 
-    // TODO: 这里开始调用你的算法 pipeline
-    // run_msa(opt);
+        // 关键：CLI11_PARSE 必须在返回 int 的函数里用（典型就是 main）
+        CLI11_PARSE(app, argc, argv);
+        // 解析成功后，opt 已被填充
+        logParsedOptions(opt);
+
+        // 校验参数
+        checkOption(opt);
+
+        // TODO: 这里开始调用你的算法 pipeline
+        // run_msa(opt);
+
+        return 0;
+    } catch (const std::exception &e) {
+        spdlog::error("Fatal error: {}", e.what());
+        spdlog::error("halign4 End!");
+        return 1;
+    } catch (...) {
+        spdlog::error("Fatal error: unknown exception");
+        spdlog::error("halign4 End!");
+        return 2;
+    }
 
     return 0;
 }
