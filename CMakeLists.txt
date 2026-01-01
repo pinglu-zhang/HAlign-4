@@ -23,3 +23,7 @@ add_executable(halign4
         src/halign4.cpp)
 
 target_link_libraries (halign4 seqan3::seqan3)
+
+target_compile_definitions(halign4 PRIVATE
+        $<$<CONFIG:Debug>:_DEBUG>
+)
