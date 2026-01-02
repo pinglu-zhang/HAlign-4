@@ -168,7 +168,8 @@ int main(int argc, char** argv) {
         // 预处理原始数据
         // 输入文件路径，工作目录
         // 输出清理好的数据和共识序列fasta文件
-        preprocessInputFasta(opt.input, opt.workdir);
+        uint_t preproc_count = preprocessInputFasta(opt.input, opt.workdir, opt.cons_n);
+        spdlog::info("Preprocessing produced {} records", preproc_count);
 
         // 获取共识序列
         // 输入共识序列fasta文件路径，调用别的方法比对
