@@ -8,17 +8,20 @@
 #include <string>
 #include <system_error>
 #include <regex>
+#include <array>
+#include <cstdint>
 
 #if __has_include(<curl/curl.h>)
 #include <curl/curl.h>
 #define HALIGN4_HAVE_LIBCURL 1
 #endif
 
+namespace fs = std::filesystem;
+using FilePath = std::filesystem::path;
+
+
 namespace file_io
 {
-    namespace fs = std::filesystem;
-    using FilePath = std::filesystem::path;
-
     inline std::string formatFsError(std::string_view msg,
                                      const FilePath& p,
                                      const std::error_code& ec) {
@@ -233,6 +236,21 @@ namespace file_io
 #endif
     }
 
+    // 下载或复制：如果 srcOrUrl 表示远程 URL（由 isUrl 判断），则调用 downloadFile；否则调用 copyFile。
+    // 中文注释：
+    // - 参数：srcOrUrl 可为本地文件路径或 URL（例如 "https://..."）；dst 为目标本地路径。
+    // - 语义：对用户透明地将远程资源下载到本地，或将本地文件复制到目标位置。
+    // - 错误处理：底层的 downloadFile/copyFile 会在失败时抛出异常，本函数不会吞掉异常。
+    inline void fetchFile(const FilePath& srcOrUrl, const FilePath& dst) {
+        if (isUrl(srcOrUrl)) {
+            // 对远程 URL，使用 downloadFile（downloadFile 接受 string URL）
+            downloadFile(srcOrUrl.string(), dst);
+        } else {
+            // 本地文件，直接复制（copyFile 会验证源为常规文件并处理跨设备等情况）
+            copyFile(srcOrUrl, dst);
+        }
+    }
+
     // 可选：危险操作（如你未来需要清空 workdir）
     // remove_all 的语义与返回值见标准库文档 :contentReference[oaicite:6]{index=6}
     inline void removeAll(const FilePath& p) {
@@ -242,7 +260,163 @@ namespace file_io
             throw std::runtime_error(formatFsError("remove_all failed", p, ec));
         }
     }
+
+    // 获取文件内容
+    inline std::string readFileToString(const FilePath& p) {
+        requireRegularFile(p, "input file");
+
+        std::ifstream in(p, std::ios::binary);
+        if (!in) {
+            throw std::runtime_error("failed to open file for reading: " + p.string());
+        }
+
+        std::string content;
+        in.seekg(0, std::ios::end);
+        content.resize(static_cast<std::size_t>(in.tellg()));
+        in.seekg(0, std::ios::beg);
+        in.read(&content[0], static_cast<std::streamsize>(content.size()));
+        if (!in) {
+            throw std::runtime_error("failed to read file: " + p.string());
+        }
+        return content;
+    }
+
+
 }
+
+
+namespace seq_io
+{
+#if defined(FilePath)
+    using FilePath = ::FilePath;
+#else
+    using FilePath = std::filesystem::path;
+#endif
+
+    struct SeqRecord
+    {
+        std::string id;     // header name（到空格前）
+        std::string desc;   // header 其余部分
+        std::string seq;    // 序列
+        std::string qual;   // FASTQ 质量字符串（可选），实现中需要访问该字段
+    };
+
+    constexpr std::array<std::uint8_t, 256> makeCleanTable()
+    {
+        std::array<std::uint8_t, 256> table{};
+
+        for (std::size_t i = 0; i < table.size(); ++i) {
+            table[i] = static_cast<std::uint8_t>('N');
+        }
+
+        table[static_cast<unsigned char>('A')] = 'A';
+        table[static_cast<unsigned char>('a')] = 'A';
+        table[static_cast<unsigned char>('C')] = 'C';
+        table[static_cast<unsigned char>('c')] = 'C';
+        table[static_cast<unsigned char>('G')] = 'G';
+        table[static_cast<unsigned char>('g')] = 'G';
+        table[static_cast<unsigned char>('T')] = 'T';
+        table[static_cast<unsigned char>('t')] = 'T';
+        table[static_cast<unsigned char>('U')] = 'U';
+        table[static_cast<unsigned char>('u')] = 'U';
+        table[static_cast<unsigned char>('-')] = '-';
+
+        return table;
+    }
+
+    // 头文件内的“单一定义”常量表：inline constexpr 是推荐写法
+    inline constexpr auto clean_table = makeCleanTable();
+    inline void cleanSequence(std::string& seq)
+    {
+        for (char& ch : seq) {
+            ch = static_cast<char>(clean_table[static_cast<unsigned char>(ch)]);
+        }
+    }
+    inline void cleanSequence(SeqRecord& seq)
+    {
+        for (char& ch : seq.seq) {
+            ch = static_cast<char>(clean_table[static_cast<unsigned char>(ch)]);
+        }
+    }
+
+    class ISequenceReader
+    {
+    public:
+        virtual ~ISequenceReader() = default;
+        virtual bool next(SeqRecord& rec) = 0; // false => EOF
+    };
+
+    class KseqReader final : public ISequenceReader
+    {
+    public:
+        explicit KseqReader(const FilePath& file_path);
+        ~KseqReader() override;
+
+        KseqReader(const KseqReader&) = delete;
+        KseqReader& operator=(const KseqReader&) = delete;
+
+        KseqReader(KseqReader&&) noexcept;
+        KseqReader& operator=(KseqReader&&) noexcept;
+
+        bool next(SeqRecord& rec) override;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
+    class FastaWriter
+    {
+    public:
+        explicit FastaWriter(const FilePath& file_path, std::size_t line_width = 80);
+
+        void write(const SeqRecord& rec);
+        void flush();
+
+    private:
+        std::ofstream out_;
+        std::size_t line_width_{80};
+
+        static void writeWrapped(std::ofstream& out, std::string_view s, std::size_t width);
+    };
+
+    inline std::unique_ptr<ISequenceReader> openKseqReader(const FilePath& file_path)
+    {
+        return std::make_unique<KseqReader>(file_path);
+    }
+
+} // namespace seq_io
+
+namespace cmd
+{
+    struct BuildOptions
+    {
+        bool quiet = true;                  // 是否追加静默重定向
+        bool close_stdin = true;            // 是否追加 "< /dev/null"
+        bool detect_stdout_redirect = true; // 是否根据 '>' 决定静默策略
+    };
+
+    // cmd_template 必须包含 {input} 和 {output}；可选包含 {thread}
+    // Linux-only 规则：
+    // - 若模板中检测到 '>'（stdout 已被重定向）：追加 "2>/dev/null"
+    // - 否则追加 "> /dev/null 2>&1"
+    // - 可选追加 "< /dev/null" 关闭 stdin
+    std::string buildCommand(std::string cmd_template,
+                             const std::string& input_path,
+                             const std::string& output_path,
+                             int thread,
+                             const BuildOptions& opt = BuildOptions{});
+
+    // 执行命令并返回真实退出码：
+    // - 正常退出：返回 exit code
+    // - 信号终止：返回 128 + signal
+    // - system() 自身失败：返回 -1
+    int runCommand(const std::string& command);
+
+    // 用 tiny.fasta 做自检，运行模板命令并检查输出文件是否生成
+    bool testCommandTemplate(const std::string& cmd_template, const FilePath& workdir, int thread = 1);
+
+} // namespace cmd
 
 #endif //HALIGN4_UTILS_H
 

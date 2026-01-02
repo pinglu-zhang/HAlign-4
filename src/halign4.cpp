@@ -1,7 +1,6 @@
 #include <config.hpp>
 #include <utils.h>
 #include <thread>
-
 #include "preprocess.h"
 
 struct Options {
@@ -10,7 +9,7 @@ struct Options {
     std::string workdir;        // -w
 
     std::string center_path;    // -c
-    std::string msa_cmd_path;    // -p
+    std::string msa_cmd;    // -p
 
     int threads = [](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }();            // -t
     int kmer_size = 15;         // --kmer-size
@@ -41,7 +40,7 @@ static void setupCli(CLI::App& app, Options& opt) {
 
     // 如果 -p 是“可执行文件路径”，ExistingFile 通常也能用；
     // 若你希望允许仅命令名（在 PATH 中），这里就不要 check
-    app.add_option("-p,--msa-cmd", opt.msa_cmd_path, "High-quality method command path")
+    app.add_option("-p,--msa-cmd", opt.msa_cmd, "High-quality method command path")
         ->check(CLI::ExistingFile);
 
     app.add_option("-t,--thread", opt.threads, "Number of threads")
@@ -79,7 +78,7 @@ static void logParsedOptions(const Options& opt) {
         {"output", toString(opt.output, valW)},
         {"workdir", toString(opt.workdir, valW)},
         {"center_path", toString(opt.center_path, valW)},
-        {"msa_cmd_path", toString(opt.msa_cmd_path, valW)},
+        {"msa_cmd", toString(opt.msa_cmd, valW)},
         {"threads", std::to_string(opt.threads)},
         {"kmer_size", std::to_string(opt.kmer_size)},
         {"cons_n", std::to_string(opt.cons_n)},
@@ -113,16 +112,15 @@ static void logParsedOptions(const Options& opt) {
     spdlog::info("\n{}", oss.str());
 }
 
-static void checkOption(const Options& opt) {
+static void checkOption(Options& opt) {
     // 文件相关：统一调用 file_io
     file_io::requireRegularFile(opt.input, "input");
 
     if (!opt.center_path.empty()) {
         file_io::requireRegularFile(opt.center_path, "center_path");
     }
-    if (!opt.msa_cmd_path.empty()) {
-        file_io::requireRegularFile(opt.msa_cmd_path, "msa_cmd_path");
-    }
+
+    // 测试
 
     // 数值参数相关：仍在这里检查
     if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
@@ -136,6 +134,19 @@ static void checkOption(const Options& opt) {
     constexpr bool must_be_empty = true;
 #endif
     file_io::prepareEmptydir(opt.workdir, must_be_empty);
+
+    std::string msa_cmd_str = DEFALT_MSA_CMD;
+    if (!opt.msa_cmd.empty()) {
+        file_io::requireRegularFile(opt.msa_cmd, "msa_cmd");
+        msa_cmd_str = opt.msa_cmd;
+    }
+
+    if (cmd::testCommandTemplate(msa_cmd_str, opt.workdir, opt.threads)) {
+        spdlog::info("msa_cmd template test passed.");
+    } else {
+        throw std::runtime_error("msa_cmd template test failed.");
+    }
+    opt.msa_cmd = msa_cmd_str;
 
     // 可选：确保输出父目录存在（如果你希望自动创建）
     // file_io::ensureParentDirExists(opt.output);
@@ -168,11 +179,27 @@ int main(int argc, char** argv) {
         // 预处理原始数据
         // 输入文件路径，工作目录
         // 输出清理好的数据和共识序列fasta文件
-        preprocessInputFasta(opt.input, opt.workdir);
+        uint_t preproc_count = preprocessInputFasta(opt.input, opt.workdir, opt.cons_n);
+        spdlog::info("Preprocessing produced {} records", preproc_count);
 
         // 获取共识序列
         // 输入共识序列fasta文件路径，调用别的方法比对
         // 最后返回共识序列
+        FilePath consensus_unaligned_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_UNALIGNED;
+        FilePath consensus_aligned_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
+
+        if (!opt.center_path.empty())
+        {
+            consensus_unaligned_file = opt.center_path;
+        }
+        alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd, opt.workdir, opt.threads);
+        if (preproc_count <= opt.cons_n)
+        {
+            file_io::copyFile(consensus_aligned_file,FilePath(opt.output));
+            spdlog::info("All sequences processed; final output written to {}", opt.output);
+            return 0;
+        }
+
 
 
         // 提取minimzer估算相似度分组
