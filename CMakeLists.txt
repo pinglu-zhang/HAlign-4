@@ -29,6 +29,7 @@ add_executable(halign4
         src/utils/cmd.cpp
         src/consensus/selector.cpp
         src/utils/file_io.cpp
+        src/consensus/consensus.cpp
 )
 
 find_package(CURL)
@@ -48,7 +49,9 @@ else()
     message(STATUS "zlib not found; compression support will be disabled or limited")
 endif()
 
-target_link_libraries(halign4 PRIVATE seqan3::seqan3)
+find_package(OpenMP REQUIRED)
+
+target_link_libraries(halign4 PRIVATE seqan3::seqan3 OpenMP::OpenMP_CXX)
 
 
 

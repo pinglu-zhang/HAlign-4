@@ -2,6 +2,8 @@
 #include <utils.h>
 #include <thread>
 #include "preprocess.h"
+#include "consensus.h"
+#include <chrono>
 
 struct Options {
     std::string input;          // -i
@@ -168,12 +170,14 @@ int main(int argc, char** argv) {
         // 关键：CLI11_PARSE 必须在返回 int 的函数里用（典型就是 main）
         CLI11_PARSE(app, argc, argv);
 
-        setupLoggerWithFile(opt.workdir);
+
         // 解析成功后，opt 已被填充
         logParsedOptions(opt);
 
         // 校验参数
         checkOption(opt);
+
+        setupLoggerWithFile(opt.workdir);
 
         // TODO: 这里开始调用你的算法 pipeline
         // 预处理原始数据
@@ -187,7 +191,8 @@ int main(int argc, char** argv) {
         // 最后返回共识序列
         FilePath consensus_unaligned_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_UNALIGNED;
         FilePath consensus_aligned_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
-
+        FilePath consensus_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_FASTA;
+        FilePath consensus_json_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_JSON;
         if (!opt.center_path.empty())
         {
             consensus_unaligned_file = opt.center_path;
@@ -201,6 +206,22 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        // 计时：测量 generateConsensusSequenceDoubleBuffered 的执行时间
+        const std::size_t batch_size = 512; // 可调：每轮处理的序列数
+        spdlog::info("Starting consensus generation (double-buffered), batch_size={}...", batch_size);
+        auto t_start = std::chrono::steady_clock::now();
+        std::string consensus_string = consensus::generateConsensusSequenceDoubleBuffered(
+            consensus_aligned_file,
+            consensus_file, // 覆盖写回
+            consensus_json_file,
+            0, // 不限制数量
+            opt.threads,
+            batch_size
+        );
+
+        auto t_end = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
+        spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
 
 
         // 提取minimzer估算相似度分组

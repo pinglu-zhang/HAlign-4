@@ -59,6 +59,9 @@ const std::string DATA_CLEAN = "clean_data";      // 清理后数据子目录
 const std::string CLEAN_CONS_UNALIGNED = "consensus_unaligned.fasta"; // 共识序列文件名（未对齐）
 const std::string CLEAN_CONS_ALIGNED = "consensus_aligned.fasta"; // 共识序列文件名（未对齐）
 
+const std::string CLEAN_CONS_FASTA = "consensus.fasta"; // 共识序列文件名（未对齐）
+const std::string CLEAN_CONS_JSON = "consensu.json"; // 共识序列文件名（未对齐）
+
 // ------------------------------------------------------------------
 // CLI11 自定义格式器（美化选项输出）
 // ------------------------------------------------------------------
