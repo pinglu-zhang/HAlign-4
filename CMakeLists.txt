@@ -27,6 +27,7 @@ add_executable(halign4
         src/utils/seq_io.cpp
         src/utils/cmd.cpp
         src/consensus/selector.cpp
+        src/utils/file_io.cpp
 )
 
 find_package(CURL)
