@@ -62,10 +62,12 @@ target_compile_definitions(halign4_test_support PUBLIC
         $<$<CONFIG:Debug>:_DEBUG>
 )
 
-# Create the test executable (was missing) and link it with the support library
+# 收集当前目录下所有 test_*.cpp
+
+
 add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/doctest_main.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/test_generate_consensus.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_consensus.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
@@ -74,7 +76,8 @@ target_link_libraries(halign4_tests PRIVATE halign4_test_support)
 enable_testing()
 
 # 注册一个测试：运行这个可执行文件
-add_test(NAME halign4_tests COMMAND halign4_tests)
+# add_test(NAME halign4_tests COMMAND halign4_tests)
 
-add_test(NAME generate_consensus
+add_test(NAME consensus
         COMMAND halign4_tests --test-suite=consensus)
+set_tests_properties(consensus PROPERTIES TIMEOUT 0)

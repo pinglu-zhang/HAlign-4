@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
-
+#include <thread>
 #include <cereal/archives/json.hpp>
 
 #if __has_include(<omp.h>)
@@ -85,217 +85,6 @@ namespace consensus
         ar(cereal::make_nvp("consensus", cj));
     }
 
-    // 生成共识序列（batch 模式）
-    // - aligned_fasta: 输入（已对齐）
-    // - out_fasta/out_json: 输出路径
-    // - seq_limit: 限制处理的序列数量（0 表示不限制）
-    // - threads: 线程数（<=0 表示自动检测）
-    // - batch_size: 每轮由 master 读取并交给 worker 处理的序列数
-    std::string generateConsensusSequenceBatched(const FilePath& aligned_fasta,
-                                                 const FilePath& out_fasta,
-                                                 const FilePath& out_json,
-                                                 std::uint64_t seq_limit,
-                                                 int threads,
-                                                 std::size_t batch_size)
-    {
-        // 基本参数检查
-        file_io::requireRegularFile(aligned_fasta, "aligned_fasta");
-        if (batch_size == 0) {
-            throw std::runtime_error("batch_size must be > 0");
-        }
-
-        // 线程数决定：若未显式指定则使用 OpenMP 探测到的最大线程数
-        if (threads <= 0) {
-#if __has_include(<omp.h>)
-            threads = omp_get_max_threads();
-#else
-            threads = 1;
-#endif
-        }
-
-#if __has_include(<omp.h>)
-        // 禁用 OpenMP 动态线程以便行为稳定和可预测
-        omp_set_dynamic(0);
-#endif
-
-        seq_io::KseqReader reader(aligned_fasta);
-
-        // 读取首条以确定比对长度（aln_len）
-        seq_io::SeqRecord rec;
-        if (!reader.next(rec)) {
-            throw std::runtime_error("aligned fasta is empty: " + aligned_fasta.string());
-        }
-
-        const std::size_t aln_len = rec.seq.size();
-        if (aln_len == 0) {
-            throw std::runtime_error("first sequence length is 0: " + aligned_fasta.string());
-        }
-
-        // 初始化计数结构，按列预分配
-        ConsensusJson cj;
-        cj.aln_len = (std::uint64_t)aln_len;
-        cj.counts.assign(aln_len, SiteCount{});
-
-        // batch 缓冲：只存 batch_size 条序列，降低内存占用
-        std::vector<std::string> batch_seqs;
-        batch_seqs.reserve(batch_size);
-        batch_seqs.push_back(std::move(rec.seq)); // 将已读的第一条放入 batch
-
-        std::uint64_t num_seqs = 0;
-
-        bool error = false;
-        std::string error_msg;
-
-        // 并行区域：master 负责读，worker 负责统计；通过 barrier 同步可见性
-        // 共享变量：reader（仅 master 读）、batch_seqs（master 写，workers 读）、cj（workers 写特定索引）、
-        // num_seqs（master 更新）、error/error_msg（master 写）
-#if __has_include(<omp.h>)
-        #pragma omp parallel num_threads(threads) shared(reader, batch_seqs, cj, num_seqs, error, error_msg)
-#endif
-        {
-            while (true) {
-                std::uint64_t batch_n = 0;
-                bool done = false;
-                bool stop_after_this_batch = false;
-
-#if __has_include(<omp.h>)
-                #pragma omp master
-#endif
-                {
-                    // master 线程负责从 reader 中读取直到填满 batch 或 EOF 或达到 seq_limit
-                    // 注意：只有 master 写入 batch_seqs，其他线程在后续的并行段只做只读访问，
-                    // 因此无需对 batch_seqs 加锁。但必须在 master 写完后通过 OpenMP barrier
-                    // 让 worker 线程看到完整的写入。
-
-                    if (num_seqs > 0) {
-                        batch_seqs.clear();
-                    }
-
-                    while (batch_seqs.size() < batch_size) {
-                        const std::uint64_t current_total = num_seqs + (std::uint64_t)batch_seqs.size();
-                        if (seq_limit > 0 && current_total >= seq_limit) {
-                            stop_after_this_batch = true;
-                            break;
-                        }
-
-                        seq_io::SeqRecord r2;
-                        if (!reader.next(r2)) {
-                            // EOF
-                            break;
-                        }
-
-                        if (r2.seq.size() != aln_len) {
-                            // 长度不一致是致命错误，记录并终止
-                            error = true;
-                            error_msg = "alignment length mismatch: expect " +
-                                        std::to_string(aln_len) + ", got " +
-                                        std::to_string(r2.seq.size());
-                            break;
-                        }
-
-                        // master 将序列移动进 batch_seqs（写操作），随后会有 barrier
-                        batch_seqs.push_back(std::move(r2.seq));
-                    }
-
-                    batch_n = (std::uint64_t)batch_seqs.size();
-
-                    // 如果本批无数据或发生错误，则标记 done 以使并行循环退出
-                    if (batch_n == 0) {
-                        done = true;
-                    }
-                    if (error) {
-                        done = true;
-                    }
-                }
-
-                // master 写入完成后用 barrier 同步，保证所有 worker 可以安全读取 batch_seqs
-#if __has_include(<omp.h>)
-                #pragma omp barrier
-#endif
-                if (done) {
-                    break;
-                }
-
-                // ===== 并行统计阶段 =====
-                // 设计原则：对每一个列索引 i，只有一个线程会写入 cj.counts[i]（因为我们用 #pragma omp for
-                // 将索引范围划分给线程），因此对 SiteCount 的递增不需要原子操作或锁。
-                // 同时 batch_seqs 在此段只做只读访问。
-                const std::size_t bn = (std::size_t)batch_n;
-
-#if __has_include(<omp.h>)
-                #pragma omp for schedule(static)
-#endif
-                for (std::int64_t i = 0; i < (std::int64_t)aln_len; ++i) {
-                    // 每个线程独占某些列的 SiteCount 引用，线程之间不会写同一索引，故无需同步原语
-                    SiteCount& sc = cj.counts[(std::size_t)i];
-
-                    // 遍历当前 batch 内的各条序列并累计该列字符
-                    // 读取 batch_seqs[s][i] 是线程安全的，因为 master 在此之前已经完成写入并有 barrier
-                    for (std::size_t s = 0; s < bn; ++s) {
-                        const std::uint8_t idx = mapBase(batch_seqs[s][(std::size_t)i]);
-                        switch (idx) {
-                            case 0: sc.a++; break;
-                            case 1: sc.c++; break;
-                            case 2: sc.g++; break;
-                            case 3: sc.t++; break;
-                            case 4: sc.u++; break;
-                            case 5: sc.n++; break;
-                            case 6: sc.dash++; break;
-                            default: sc.n++; break;
-                        }
-                    }
-                }
-
-                // 并行统计结束后再由 master 更新全局计数并决定是否继续下一批
-#if __has_include(<omp.h>)
-                #pragma omp master
-#endif
-                {
-                    // 将本批数量合并到总计数中（master 写操作）
-                    num_seqs += batch_n;
-                    cj.num_seqs = num_seqs;
-
-                    // 如果达到 seq_limit，标记在处理完当前 batch 后停止
-                    if (seq_limit > 0 && num_seqs >= seq_limit) {
-                        stop_after_this_batch = true;
-                    }
-                }
-
-                // 所有线程在此同步，保证 master 更新的 num_seqs/cj.num_seqs 对下一轮可见
-#if __has_include(<omp.h>)
-                #pragma omp barrier
-#endif
-                if (stop_after_this_batch) {
-                    break;
-                }
-            }
-        }
-
-        // 并行区域后检查是否有错误
-        if (error) {
-            throw std::runtime_error("consensus counting failed: " + error_msg);
-        }
-        if (num_seqs == 0) {
-            throw std::runtime_error("no sequences processed");
-        }
-
-        // 生成共识序列：此阶段按列独占写入共识字符，同样可并行化
-        std::string consensus_seq(aln_len, 'N');
-
-#if __has_include(<omp.h>)
-        #pragma omp parallel for schedule(static) num_threads(threads)
-#endif
-        for (std::int64_t i = 0; i < (std::int64_t)aln_len; ++i) {
-            // 这里仅读取 cj.counts[i]，并写入 consensus_seq[i]（不同索引互不干扰）
-            consensus_seq[(std::size_t)i] = pickConsensusChar(cj.counts[(std::size_t)i]);
-        }
-
-        // 写出：FASTA 与 JSON
-        writeConsensusFasta(out_fasta, consensus_seq);
-        writeCountsJson(out_json, cj);
-
-        return consensus_seq;
-    }
 
     // 仅由 single 线程调用：读入一批序列到 dst
     static void fillBatch(seq_io::KseqReader& reader,
@@ -362,7 +151,7 @@ namespace consensus
 
         if (threads <= 0) {
 #if __has_include(<omp.h>)
-            threads = omp_get_max_threads();
+            threads = [](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }();
 #else
             threads = 1;
 #endif
@@ -420,7 +209,7 @@ namespace consensus
         if (buf[0].empty()) {
             throw std::runtime_error("no sequences processed");
         }
-        const int grainsize = 256;
+        const int grainsize = 64;
 #if __has_include(<omp.h>)
         #pragma omp parallel num_threads(threads) shared(reader, cj, buf, stop_flag, eof_flag, error, error_msg, seen_total, num_seqs)
 #endif

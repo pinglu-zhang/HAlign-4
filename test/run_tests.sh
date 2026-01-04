@@ -27,6 +27,8 @@ Options:
   --clean                   Remove build directory before configuring
   --no-verbose              Run ctest without -V
   --perf                    Enable perf tests (export HALIGN4_RUN_PERF=1)
+  --suite) SUITE="$2"; shift 2;;
+  --file)  SOURCE_FILE="$2"; shift 2;;
   -h, --help                Show help
 
 Examples:
@@ -82,6 +84,22 @@ if [[ -n "${JOBS}" ]]; then
   CMAKE_BUILD_ARGS+=(-j "${JOBS}")
 fi
 cmake "${CMAKE_BUILD_ARGS[@]}"
+
+# Run doctest directly (bypass ctest) when filtering by suite and/or source file.
+if [[ -n "${SUITE:-}" || -n "${SOURCE_FILE:-}" ]]; then
+  ...
+  echo "[run_tests] running doctest (filters: suite='${SUITE:-}', file='${SOURCE_FILE:-}')"
+  ...
+  if [[ -n "${SUITE:-}" ]]; then
+    DOCTEST_ARGS+=(-ts="${SUITE}")
+  fi
+  if [[ -n "${SOURCE_FILE:-}" ]]; then
+    DOCTEST_ARGS+=(--source-file="${SOURCE_FILE}")   # doctest 支持 --source-file 过滤 :contentReference[oaicite:1]{index=1}
+  fi
+  ...
+fi
+
+
 
 # Run tests
 echo "[run_tests] running ctest..."
