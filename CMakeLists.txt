@@ -3,6 +3,14 @@ project(HAlign4)
 
 set(CMAKE_CXX_STANDARD 20)
 
+# 如果用户没有指定 CMAKE_BUILD_TYPE，则默认设置为 Release，以便默认开启优化构建
+if(NOT DEFINED CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build (default: Release)" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set -> defaulting to: ${CMAKE_BUILD_TYPE}")
+else()
+    message(STATUS "CMAKE_BUILD_TYPE is: ${CMAKE_BUILD_TYPE}")
+endif()
+
 set(SEQAN3_DIR "${CMAKE_SOURCE_DIR}/extern/seqan3/share/cmake/seqan3")
 # set(CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/extern/seqan3/share/cmake/seqan3")
 set(SEQAN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/extern/seqan3/include")

@@ -7,7 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CTest)  # 提供 ctest 基础设施与 add_test :contentReference[oaicite:1]{index=1}
 
-
+# 如果用户没有指定 CMAKE_BUILD_TYPE，则默认设置为 Release，以便默认开启优化构建
+if(NOT DEFINED CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build (default: Release)" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set -> defaulting to: ${CMAKE_BUILD_TYPE}")
+else()
+    message(STATUS "CMAKE_BUILD_TYPE is: ${CMAKE_BUILD_TYPE}")
+endif()
 get_filename_component(HALIGN4_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 # 关键：让 version check 能找到 version.hpp

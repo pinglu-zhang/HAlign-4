@@ -89,7 +89,7 @@ TEST_SUITE("read_fasta")
     // 性能测试：只有 HALIGN4_RUN_PERF=1 才执
     TEST_CASE("read time: n=10000 len=30000 (kseq)")
     {
-        constexpr std::size_t N   = 1000;
+        constexpr std::size_t N   = 10000;
         constexpr std::size_t LEN = 30000;
 
         auto dir = makeTempDir("halign4_tests_read_perf");

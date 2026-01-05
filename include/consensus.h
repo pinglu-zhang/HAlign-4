@@ -4,6 +4,8 @@
 #include <cstddef>
 #include "utils.h"
 #include <cereal/cereal.hpp>
+#include <cereal/types/vector.hpp>
+#include <cereal/types/string.hpp>
 
 
 // ---------------------------------------------------------------------------
@@ -178,7 +180,8 @@ namespace consensus
                                                        const FilePath& out_fasta,
                                                        const FilePath& out_json,
                                                        std::uint64_t seq_limit,
-                                                       int thread);
+                                                       int thread,
+                                                       size_t batch_size = 4096);
 
 } // namespace consensus
 

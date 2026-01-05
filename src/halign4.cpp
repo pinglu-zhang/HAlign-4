@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
         // - 使用 SoA（Structure-of-Arrays）便于向量化与缓存友好；
         // - 在 Release 模式启用 -O3 与 -march=native 等编译器优化，并根据目标架构调整线程亲和性（affinity）；
         // - 记录运行时间以便基准分析。
-        const std::size_t batch_size = 512; // 可调：每轮处理的序列数（若实现使用批次）；对内存与并发有直接影响
+        const std::size_t batch_size = 4096; // 可调：每轮处理的序列数（若实现使用批次）；对内存与并发有直接影响
         spdlog::info("Starting consensus generation (double-buffered), batch_size={}...", batch_size);
         auto t_start = std::chrono::steady_clock::now();
         std::string consensus_string = consensus::generateConsensusSequence(
@@ -266,7 +266,8 @@ int main(int argc, char** argv) {
             consensus_file, // 覆盖写回
             consensus_json_file,
             0, // 不限制数量
-            opt.threads
+            opt.threads,
+            batch_size
         );
 
         auto t_end = std::chrono::steady_clock::now();

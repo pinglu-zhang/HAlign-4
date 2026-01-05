@@ -612,7 +612,8 @@ namespace consensus
                                                        const FilePath& out_fasta,
                                                        const FilePath& out_json,
                                                        std::uint64_t seq_limit,
-                                                       int thread)
+                                                       int thread,
+                                                       size_t batch_size)
     {
         file_io::requireRegularFile(aligned_fasta, "aligned_fasta");
 
@@ -636,7 +637,6 @@ namespace consensus
         std::uint64_t num_seqs = 0;
 
         // 批处理参数：批大小可调（经验值），在内存允许的范围内放大能减少调度开销
-        const std::size_t batch_size = 4096;
         std::vector<std::string> batch;
         batch.reserve(batch_size + 1);
 
