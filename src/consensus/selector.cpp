@@ -1,17 +1,49 @@
 #include "consensus.h"
 
-// ---------------- TopKLongestSelector 实现说明 ----------------
-// TopKLongestSelector 用于在单次顺序扫描中选出长度最长的 K 条序列。
-// 设计目标：
-// - 空间复杂度 O(K)，只保留 K 条记录（使用堆存储）；
-// - 时间复杂度：每个元素的插入/维护为 O(log K)；遍历 N 条记录总体为 O(N log K)；
-// - 稳定性：对相同长度的序列，优先保留较早出现的序列（即出现更早的序列被视为更“好”）。
+// ---------------- TopKLongestSelector 实现说明（详细中文注释） ----------------
+// TopKLongestSelector 的职责：在一次线性扫描（streaming）中，选出长度最长的前 K 条序列，
+// 并保持在长度相同情况下的稳定性（优先保留更早出现的序列）。
 //
-// 实现细节：
-// - 使用一个最小堆（min-heap），heap_[0] 始终为当前已收集 K 条中的最差（即最短或最晚出现的）元素；
-// - 当堆未满（size < K）时直接加入并上浮（siftUp）；
-// - 当堆已满时，比较候选项与 heap_[0]：如果候选项更好（长度更长或相同长度但出现更早），则替换 heap_[0] 并下沉（siftDown）；
-// - 比较规则（betterThan / worseThan）使用 (length, order) 的字典序：长度为主，出现顺序为次（更早更优）。
+// 设计目标与动机：
+// - 流式（streaming）处理：不需要将所有序列都加载到内存；适用于 N 很大（百万级或更高）的输入。
+// - 空间受限：只使用 O(K) 的额外空间来保存候选；K 通常远小于 N（例如 K 为几百或几千）。
+// - 时间高效：每读到一条序列，做 O(log K) 的堆操作；总体 O(N log K) 时间复杂度。
+// - 稳定性：当序列长度相同时，保留先出现的那条（稳定的选择有助于可复现性和简单调试）。
+//
+// 数据结构与比较准则：
+// - 使用最小堆（min-heap）：堆顶保存当前 K 个候选中的“最差”元素（即最短或在同样长度下最晚出现），
+//   这样新的更好的候选只需与堆顶比较，若更好则替换堆顶并下沉，保持堆的大小为 K。
+// - Item 包含字段：len（序列长度）、order（输入顺序计数器，用于稳定性比较）、rec（SeqRecord 本身）。
+// - 比较准则：词典序 (len, -order) 或在实现中用两个函数表达：
+//     * worseThan(a,b)：若 a 在排序上比 b 更“差”（即应该排在前面的更差元素放在堆顶），返回 true；
+//       这里定义为：长度更短 -> 更差；若长度相等，order 更大（出现更晚） -> 更差。
+//     * betterThan(a,b)：相反的判断，用于判定候选是否优于当前堆顶。
+//
+// 稳定性说明：
+// - 我们通过 order_counter_ 递增记录读到每条记录的先后顺序。
+// - 当长度相同时，出现顺序更早的记录被认为更好（order 值更小）。因此在相同长度时，先到的记录优先保留，
+//   从而保证最终结果的稳定性（同样的输入顺序给出一致结果）。
+//
+// 内存与性能权衡：
+// - 内存：保留 K 条 SeqRecord 的内存为 O(K * avg_len)。若 avg_len 很大（例如每条序列很长），并且 K 很大，
+//   可能造成较高内存占用；若内存敏感，可以仅保留索引/元数据或做外部存储。
+// - 性能：堆操作为 O(log K)。若 K 很小（例如 10、100），堆操作会非常快。若 K 挺大（接近 N），应考虑其它策略（如 partial sort 或外部排序）。
+//
+// 并发/线程安全：
+// - 本实现不是线程安全的；TopKLongestSelector 假定在单线程上下文中被访问（例如在读文件的主线程中逐条调用 consider）。
+// - 若希望多线程并行处理输入（多线程读序列并同时 consider），需要对 selector 加锁或采用线程本地局部 TopK 后再归并（推荐）：
+//     * 每个线程维护自己的 TopK（thread-local），在处理完一段数据后，把每个线程的 TopK 合并到全局 TopK（合并成本 O(T * K log K)）。
+//
+// 可替代实现/扩展：
+// - 若只需要最终 TopK 的 Unstable 版本（不关心稳定性），可以使用 std::priority_queue + 简化比较函数。
+// - 若 K 很大且内存不足，可采用外部归并（external merge）或对输入进行两轮扫描（第一轮抽样估计阈值，第二轮过滤）。
+// - 若需要支持按其他度量（例如按质量评分或某种复合度量），只需调整 Item 的比较函数即可。
+//
+// 边界与异常情况处理：
+// - 若 k_ == 0：selector 在 consider 时直接返回，不保存任何记录；takeSortedDesc 返回空向量。
+// - 如果输入中存在超长序列导致 len 值溢出到 size_t 的极端情况（非常不现实），代码会按 size_t 语义处理。
+// - 本实现假定 seq_io::SeqRecord 的移动语义正确（即可以通过 std::move(rec) 将内存转移到堆中而不是复制）。
+
 
 TopKLongestSelector::TopKLongestSelector(std::size_t k)
         : k_(k)
@@ -19,6 +51,7 @@ TopKLongestSelector::TopKLongestSelector(std::size_t k)
         heap_.reserve(k_);
     }
 
+    // 重置选择器为新的 K 值，清空内部状态
     void TopKLongestSelector::reset(std::size_t k)
     {
         k_ = k;
@@ -27,16 +60,19 @@ TopKLongestSelector::TopKLongestSelector(std::size_t k)
         heap_.reserve(k_);
     }
 
+    // 当前堆中已保存的元素数量
     std::size_t TopKLongestSelector::size() const
     {
         return heap_.size();
     }
 
+    // selector 的容量 K
     std::size_t TopKLongestSelector::capacity() const
     {
         return k_;
     }
 
+    // 是否为空
     bool TopKLongestSelector::empty() const
     {
         return heap_.empty();

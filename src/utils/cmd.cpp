@@ -10,6 +10,8 @@
 #include "config.hpp"
 
 // 不使用 namespace detail：仅在本 cpp 内部可见的 helper（internal linkage）
+// replaceAll: 将字符串中所有出现的子串替换为另一个字符串。
+// 注意：若 from 为空则不做任何事情；该实现会修改原字符串并支持被替换的目标长度变化。
 static void replaceAll(std::string& s, const std::string& from, const std::string& to)
 {
     if (from.empty()) return;
@@ -20,6 +22,8 @@ static void replaceAll(std::string& s, const std::string& from, const std::strin
     }
 }
 
+// containsToken: 检查一个字符串是否包含指定的子串，主要用于快速判断模板里是否含有占位符
+// 轻量工具，未做完整的模板解析，仅作存在性检测。
 static bool containsToken(const std::string& s, const std::string& tok)
 {
     return s.find(tok) != std::string::npos;
@@ -27,6 +31,14 @@ static bool containsToken(const std::string& s, const std::string& tok)
 
 namespace cmd
 {
+    // buildCommand:
+    // - cmd_template: 用户提供的命令模板，必须至少包含 {input} 和 {output} 占位符。
+    // - input_path/output_path: 会替换模板中的 {input}/{output}。
+    // - thread: 当模板含有 {thread} 且 thread >= 0 时会替换为线程数；传入 -1 表示不替换 {thread}。
+    // - opt: BuildOptions 控制静默（quiet）与是否关闭 stdin（close_stdin）等策略。
+    // 返回值：最终用于 system() 的命令行字符串（注意：是 shell 命令行，可能包含重定向）。
+    // 安全提示：本函数简单做字符串替换，不对路径做 shell 转义；如果命令模板来自不可信来源，
+    // 需用适当的转义或避免通过 shell 执行（如使用 execv 系列直接传参）。
     std::string buildCommand(std::string cmd_template,
                              const std::string& input_path,
                              const std::string& output_path,
@@ -49,6 +61,8 @@ namespace cmd
             replaceAll(cmd_template, "{thread}", std::to_string(thread));
         }
 
+        // 如果用户要求静默或关闭 stdin，则需要在命令后拼接重定向符号。
+        // note: detect_stdout_redirect 只是检测是否有 '>' 字符，属于简单启发式判断，不完全可靠。
         if (!opt.quiet && !opt.close_stdin) {
             return cmd_template;
         }
@@ -75,11 +89,13 @@ namespace cmd
         return cmd_template;
     }
 
-    // 执行命令并返回命令是否成功退出（exit code == 0）。
-    // 之所以返回 bool 是因为调用方只关心命令是否成功。
-    // - 若 system() 失败（fork/exec）：返回 false
-    // - 若命令正常退出且 exit code == 0：返回 true
-    // - 其它情况（非零退出码或被信号终止）：返回 false
+    // runCommand:
+    // - 直接使用 std::system 执行 shell 命令并返回命令的 exit code（非布尔）
+    // - 返回语义：
+    //     * -1: system() 本身调用失败（如 fork 失败）；
+    //     * 若 WIFEXITED(status) 为真，则返回子进程的退出码（WEXITSTATUS(status))；
+    //     * 否则返回原始 status（例如被信号终止的编码）。
+    // 注意：std::system 会调用 /bin/sh -c "command"，存在 shell 注入风险，命令参数应由调用者妥善转义。
     int runCommand(const std::string& command)
     {
         const int status = std::system(command.c_str());
@@ -94,7 +110,18 @@ namespace cmd
         return status;
     }
 
-    // 使用 tiny.fasta 做自检，运行模板命令并检查输出文件是否生成
+    // testCommandTemplate:
+    // - 在给定的 workdir 下创建临时目录 WORKDIR_TMP，并在其中写入一个小型的 FASTA（tiny.fasta）作为输入，
+    //   随后构造并运行用户提供的命令模板，检查命令是否成功（退出码 0）并且输出文件是否生成。
+    // - 参数：
+    //     * cmd_template: 用户命令模板（会被 buildCommand 替换 {input}/{output}）
+    //     * workdir: 基础工作目录（函数会在 workdir/WORKDIR_TMP 下创建临时文件）
+    //     * thread: 传给 buildCommand 的线程替换值
+    // - 返回：bool，true 表示命令成功执行并产生输出文件；false 表示任一步骤失败。
+    // - 清理：函数最后会尝试删除临时目录（即使命令失败也会尝试清理），删除失败只会记录警告。
+    // 安全与健壮性注意事项：
+    // - 该函数用于“自检”模板是否能正常运行，命令执行有副作用（会在本地文件系统写入），请在可信环境运行。
+    // - 对于长时间运行或交互式命令，建议在模板中加入超时或使用更安全的运行方式。
     bool testCommandTemplate(const std::string& cmd_template, const FilePath& workdir, int thread)
     {
         const FilePath temp_dir = workdir / WORKDIR_TMP;
@@ -123,12 +150,12 @@ namespace cmd
                 }
                 ofs <<
                     R"(>seq1
-ACGTACGTGA
->seq2
-ACGTTGCA
->seq3
-ACGTACGA
-))";
+    ACGTACGTGA
+    >seq2
+    ACGTTGCA
+    >seq3
+    ACGTACGA
+    ))";
              }
 
              std::string cmd_line;

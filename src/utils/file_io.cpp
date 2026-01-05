@@ -5,6 +5,7 @@
 
 namespace file_io {
 
+    // 格式化文件系统错误信息为可读字符串（带路径与错误消息）
     std::string formatFsError(std::string_view msg,
                                      const FilePath& p,
                                      const std::error_code& ec) {
@@ -21,6 +22,7 @@ namespace file_io {
         return s;
     }
 
+    // 确保路径存在，否则抛出异常（用于输入检验）
     void requireExists(const FilePath& p, std::string_view what) {
         std::error_code ec;
         const bool ok = fs::exists(p, ec);
@@ -29,6 +31,7 @@ namespace file_io {
         }
     }
 
+    // 确保路径是常规文件，否则抛出异常
     void requireRegularFile(const FilePath& p, std::string_view what) {
         std::error_code ec;
         const bool ok = fs::is_regular_file(p, ec);
@@ -37,6 +40,7 @@ namespace file_io {
         }
     }
 
+    // 确保路径是目录，否则抛出异常
     void requireDirectory(const FilePath& p, std::string_view what) {
         std::error_code ec;
         const bool ok = fs::is_directory(p, ec);
@@ -45,6 +49,7 @@ namespace file_io {
         }
     }
 
+    // 确保目录存在；若不存在则创建
     void ensureDirectoryExists(const FilePath& p, std::string_view what) {
         std::error_code ec;
         if (fs::exists(p, ec)) {
@@ -64,6 +69,7 @@ namespace file_io {
         }
     }
 
+    // 检查路径是否为空（文件为空）
     bool isEmpty(const FilePath& p) {
         std::error_code ec;
         const bool empty = fs::is_empty(p, ec);
@@ -73,6 +79,7 @@ namespace file_io {
         return empty;
     }
 
+    // 准备一个空目录：若不存在则创建；若要求为空但非空则抛错
     void prepareEmptydir(const FilePath& workdir, bool must_be_empty) {
         if (workdir.empty()) {
             throw std::runtime_error("workdir is empty");
@@ -85,6 +92,7 @@ namespace file_io {
         }
     }
 
+    // 确保输出文件的父目录存在（写文件前调用）
     void ensureParentDirExists(const FilePath& out_file) {
         if (out_file.empty()) return;
         auto parent = out_file.parent_path();
@@ -92,6 +100,7 @@ namespace file_io {
         ensureDirectoryExists(parent, "output parent dir");
     }
 
+    // 判断给定路径是否是 URL（简单判断 scheme:// 或 // 开头）
     bool isUrl(const FilePath& p) {
         const std::string s = p.string();
         if (s.size() >= 2 && s[0] == '/' && s[1] == '/') return true;
@@ -99,6 +108,7 @@ namespace file_io {
         return std::regex_search(s, scheme_re);
     }
 
+    // 复制文件；优先使用 std::filesystem::copy_file，遇到跨设备错误时回退到流拷贝
     void copyFile(const FilePath& src, const FilePath& dst) {
         requireRegularFile(src, "source file");
         ensureParentDirExists(dst);
@@ -133,6 +143,7 @@ namespace file_io {
         throw std::runtime_error(formatFsError("failed to copy file", dst, ec));
     }
 
+    // 下载远程文件到本地：优先使用 libcurl（如果可用），否则回退到调用 curl/wget 命令行
     void downloadFile(const std::string& url, const FilePath& dst) {
         if (url.empty()) {
             throw std::runtime_error("download url is empty");
@@ -184,6 +195,7 @@ namespace file_io {
     #endif
     }
 
+    // 如果 srcOrUrl 是 URL 则下载，否则复制本地文件到目标
     void fetchFile(const FilePath& srcOrUrl, const FilePath& dst) {
         if (isUrl(srcOrUrl)) {
             downloadFile(srcOrUrl.string(), dst);
@@ -192,6 +204,7 @@ namespace file_io {
         }
     }
 
+    // 递归删除路径（文件或目录），失败时抛出异常
     void removeAll(const FilePath& p) {
         std::error_code ec;
         fs::remove_all(p, ec);
@@ -200,6 +213,7 @@ namespace file_io {
         }
     }
 
+    // 读取整个文件到一个 std::string 中（用于小文件）
     std::string readFileToString(const FilePath& p) {
         requireRegularFile(p, "input file");
 

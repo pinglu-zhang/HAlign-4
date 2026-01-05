@@ -21,11 +21,13 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     // - workdir: 工作目录路径（应当已经准备好或由调用方保证），在此目录下会创建 data/raw 和 data/clean 等子目录。
     // - cons_n: 要保留的最长序列数量（Top-K）。
 
+    // 计时用于日志记录，帮助性能分析
     const auto t_start = std::chrono::steady_clock::now();
 
     spdlog::info("Preprocessing input FASTA file: {}", input_path);
     spdlog::info("Working directory: {}", workdir);
 
+    // ---------- 目录准备 ----------
     // 1) 确保工作目录下存在 data 文件夹。
     //    该目录用于存放原始与清洗后的数据：data/raw 和 data/clean。
     FilePath data_dir = FilePath(workdir) / WORKDIR_DATA;
@@ -42,6 +44,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     file_io::ensureDirectoryExists(clean_data_dir);
     spdlog::info("Ensured clean data directory exists: {}", clean_data_dir.string());
 
+    // ---------- 获取输入文件（支持本地/远程） ----------
     // 4) 将输入文件复制或下载到 raw_data 下。
     //    这里调用 file_io::fetchFile，函数内部会判断是 URL 还是本地路径并做相应操作（download 或 copy）。
     FilePath input_file = FilePath(input_path);
@@ -49,9 +52,11 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
     spdlog::info("Fetching input to working raw path: {} -> {}", input_file.string(), raw_dest_file.string());
     // 说明：fetchFile 在遇到远程 URL 时会调用 downloadFile 将数据写入本地；在本地路径时会调用 copyFile（包含跨设备回退等逻辑）。
+    // 这里可能抛异常（例如网络错误、权限问题），调用方应在上层捕获并处理。预处理阶段假定 fetchFile 成功。
     file_io::fetchFile(input_file,raw_dest_file);
     spdlog::info("Input available at: {}", raw_dest_file.string());
 
+    // ---------- 准备输出文件名 ----------
     // 5) 打开 raw 文件并逐条读取；对每条序列进行清洗（cleanSequence），写入 clean_data
     //    同时维护 TopKLongestSelector，选择最长的 cons_n 条序列（用于之后的 consensus 生成）。
     // handle input filenames like `sample.fasta.gz` -> `sample.fasta`
@@ -67,22 +72,39 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     FilePath consensus_file = clean_data_dir / CLEAN_CONS_UNALIGNED;
     spdlog::info("Clean output: {} ; Consensus output: {}", clean_dest_file.string(), consensus_file.string());
 
+    // ---------- 打开 reader/writer 与 TopK 选择器 ----------
     // seq_io::openKseqReader 返回一个 reader 指针（抽象），用于逐条读取序列；
     // seq_io::FastaWriter 用于把清洗后的序列写入到目标文件。
     auto reader = seq_io::openKseqReader(raw_dest_file);
     seq_io::FastaWriter clean_writer(clean_dest_file);
     TopKLongestSelector selector(cons_n);
 
+    // 处理循环：读取 -> 清洗 -> 写出 -> 交给 TopK 选择器
     seq_io::SeqRecord rec;
     std::size_t total_records = 0;
     const std::size_t log_interval = 10000;
+
+    // 重要说明（性能与正确性）：
+    // - 该循环为预处理的热路径，若输入很大（成千上万 / 几百万条序列），要关注 IO 与内存占用。
+    // - 性能优化点：
+    //    * 使用 seq_io 的 KseqReader（基于 fread/gzread）并配合大缓冲可以显著提升读取吞吐；
+    //    * FastaWriter::write 会把一条记录的 header 与折行后的序列缓存在临时字符串中一次性写出，
+    //      避免逐字符写入带来的系统调用开销；这对写大文件非常重要；
+    //    * TopKLongestSelector 应该实现为维护一个大小为 K 的最小堆，插入/替换成本为 O(log K)，适合 K 远小于记录总数的场景；
+    // - 内存权衡：TopK 的实现会保留 K 条完整记录（占用内存 O(K * avg_len)），若 K 很大需注意内存使用。
+
     while (reader->next(rec)) {
         ++total_records;
         // 对序列进行规范化清洗：例如把字母转为大写，非 AGCTU 替换为 N（具体实现由 seq_io::cleanSequence 提供）。
+        // cleanSequence 就地修改 rec.seq，尽量避免重复复制以节省内存带宽。
         seq_io::cleanSequence(rec.seq);
+
         // 将清洗后的记录写入 clean_data 文件夹
+        // 注：FastaWriter::write 已经在内部做了拼接与一次性写出的优化，性能友好。
         clean_writer.write(rec);
+
         // 将当前记录交给 TopK 选择器进行考虑（内部维护堆以保证 O(log K) 的替换成本）
+        // 注意：selector.consider 应复制或接管必要的字段（例如 id/seq），以免后续 rec 被复用/覆盖导致数据错误。
         selector.consider(rec);
 
         if ((total_records % log_interval) == 0) {
@@ -90,13 +112,18 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
         }
     }
 
-    // 把选出的序列写入到文件中
+    // ---------- 将 TopK 结果写成共识输入文件 ----------
+    // 说明：takeSortedDesc 返回按长度降序排序的记录列表（一般用于选取最长的 N 条序列作为共识计算输入）
     seq_io::FastaWriter cons_writer(consensus_file);
     auto cons_seqs = selector.takeSortedDesc();
+
+    // 将选出的序列写到 consensus 文件；注意保持一致的换行宽度等格式规则，FastaWriter 负责这些细节。
     for (const auto& cons_rec : cons_seqs) {
+        // 这里写出的 cons_rec 应该是一个深拷贝的 SeqRecord（由 selector 返回以保证安全），如果不是需要在 selector 中做拷贝。
         cons_writer.write(cons_rec);
     }
 
+    // ---------- 统计与返回值 ----------
     const auto t_end = std::chrono::steady_clock::now();
     const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
 
