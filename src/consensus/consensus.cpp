@@ -403,56 +403,24 @@ namespace consensus
             const unsigned char* data = reinterpret_cast<const unsigned char*>(str.data());
 
             const std::size_t base_off = (std::size_t)tid * aln_len;
-            std::uint32_t* a_ptr = localsA.data() + base_off;
-            std::uint32_t* c_ptr = localsC.data() + base_off;
-            std::uint32_t* g_ptr = localsG.data() + base_off;
-            std::uint32_t* t_ptr = localsT.data() + base_off;
-            std::uint32_t* u_ptr = localsU.data() + base_off;
-            std::uint32_t* n_ptr = localsN.data() + base_off;
-            std::uint32_t* d_ptr = localsDash.data() + base_off;
+            std::uint32_t* RESTRICT a_ptr = localsA.data() + base_off;
+            std::uint32_t* RESTRICT c_ptr = localsC.data() + base_off;
+            std::uint32_t* RESTRICT g_ptr = localsG.data() + base_off;
+            std::uint32_t* RESTRICT t_ptr = localsT.data() + base_off;
+            std::uint32_t* RESTRICT u_ptr = localsU.data() + base_off;
+            std::uint32_t* RESTRICT n_ptr = localsN.data() + base_off;
+            std::uint32_t* RESTRICT d_ptr = localsDash.data() + base_off;
 
-            const std::size_t limit = (aln_len / 4) * 4;
-            std::size_t i = 0;
-            for (; i < limit; i += 4) {
-                __builtin_prefetch(a_ptr + i + 16);
-                const std::uint8_t idx0 = base_map[data[i + 0]];
-                const std::uint8_t idx1 = base_map[data[i + 1]];
-                const std::uint8_t idx2 = base_map[data[i + 2]];
-                const std::uint8_t idx3 = base_map[data[i + 3]];
-
-                a_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 0);
-                c_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 1);
-                g_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 2);
-                t_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 3);
-                u_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 4);
-                n_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 5);
-                d_ptr[i + 0] += static_cast<std::uint32_t>(idx0 == 6);
-
-                a_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 0);
-                c_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 1);
-                g_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 2);
-                t_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 3);
-                u_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 4);
-                n_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 5);
-                d_ptr[i + 1] += static_cast<std::uint32_t>(idx1 == 6);
-
-                a_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 0);
-                c_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 1);
-                g_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 2);
-                t_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 3);
-                u_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 4);
-                n_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 5);
-                d_ptr[i + 2] += static_cast<std::uint32_t>(idx2 == 6);
-
-                a_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 0);
-                c_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 1);
-                g_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 2);
-                t_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 3);
-                u_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 4);
-                n_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 5);
-                d_ptr[i + 3] += static_cast<std::uint32_t>(idx3 == 6);
-            }
-            for (; i < aln_len; ++i) {
+            // 逐位循环并向量化：使用 omp simd / ivdep 提示编译器
+            // 这是 simpler 且利于编译器自动向量化的写法
+            const std::size_t limit = aln_len;
+            (void)limit;
+#if __has_include(<omp.h>)
+            #pragma omp simd
+#else
+            #pragma GCC ivdep
+#endif
+            for (std::size_t i = 0; i < aln_len; ++i) {
                 const std::uint8_t idx = base_map[data[i]];
                 a_ptr[i] += static_cast<std::uint32_t>(idx == 0);
                 c_ptr[i] += static_cast<std::uint32_t>(idx == 1);
@@ -486,103 +454,6 @@ namespace consensus
         }
     }
 
-    // 单线程版本：与 generateConsensusSequence 功能相同，但不使用 OpenMP 或并行任务。
-    // 该函数按条读取对齐的 FASTA 序列，并在当前线程中立即累加列计数，
-    // 最后生成共识序列并写出 FASTA/JSON。适合在不希望启用多线程或为调试/比较用途时使用。
-    std::string generateConsensusSequence(const FilePath& aligned_fasta,
-                                                       const FilePath& out_fasta,
-                                                       const FilePath& out_json,
-                                                       std::uint64_t seq_limit,
-                                                       int thread)
-    {
-        file_io::requireRegularFile(aligned_fasta, "aligned_fasta");
-
-        seq_io::KseqReader reader(aligned_fasta);
-
-        // 读第一条确定 aln_len
-        seq_io::SeqRecord rec;
-        if (!reader.next(rec)) {
-            throw std::runtime_error("aligned fasta is empty: " + aligned_fasta.string());
-        }
-
-        const std::size_t aln_len = rec.seq.size();
-        if (aln_len == 0) {
-            throw std::runtime_error("first sequence length is 0: " + aligned_fasta.string());
-        }
-
-        ConsensusJson cj;
-        cj.aln_len = (std::uint64_t)aln_len;
-        cj.counts.assign(aln_len, SiteCount{});
-
-        std::uint64_t num_seqs = 0;
-
-        // 批处理参数：批大小可调（经验值），在内存允许的范围内放大能减少调度开销
-        const std::size_t batch_size = 5120;
-        std::vector<std::string> batch;
-        batch.reserve(batch_size + 1);
-
-        // 首条先放入 batch（并检查长度）
-        if (rec.seq.size() != aln_len) {
-            throw std::runtime_error("alignment length mismatch: first record length changed");
-        }
-        batch.push_back(std::move(rec.seq));
-        ++num_seqs;
-
-        // 预分配并复用 thread-local 缓冲
-        int T = thread;
-#if __has_include(<omp.h>)
-        if (T <= 0) T = omp_get_max_threads();
-        if (T <= 0) T = 1;
-#else
-        if (T <= 0) T = 1;
-#endif
-        std::vector<SiteCount> locals;
-        try {
-            locals.assign((std::size_t)T * aln_len, SiteCount{});
-        } catch (...) {
-            throw std::runtime_error("failed to allocate thread-local counts");
-        }
-
-        // 读取并按批处理
-        while ((seq_limit == 0 || num_seqs < seq_limit)) {
-            // 填充 batch
-            while (batch.size() < batch_size && (seq_limit == 0 || num_seqs < seq_limit)) {
-                if (!reader.next(rec)) break;
-                if (rec.seq.size() != aln_len) throw std::runtime_error("alignment length mismatch when reading");
-                batch.push_back(std::move(rec.seq));
-                ++num_seqs;
-            }
-
-            // 处理当前 batch
-            if (!batch.empty()) {
-                // 清零 locals 一次性（快速）
-                std::memset(locals.data(), 0, locals.size() * sizeof(SiteCount));
-                processBatchParallelWithLocals(batch, cj, thread, locals);
-                batch.clear();
-            }
-
-            if (!reader.next(rec)) break; // EOF
-        }
-
-        // 如果最后 reader had more? already handled
-
-        if (cj.num_seqs == 0) cj.num_seqs = num_seqs;
-
-        if (num_seqs == 0) {
-            throw std::runtime_error("no sequences processed");
-        }
-
-        // 生成共识序列（单线程选多数）
-        std::string consensus_seq(aln_len, 'N');
-        for (std::size_t i = 0; i < aln_len; ++i) {
-            consensus_seq[i] = pickConsensusChar(cj.counts[i]);
-        }
-
-        writeConsensusFasta(out_fasta, consensus_seq);
-        writeCountsJson(out_json, cj);
-
-        return consensus_seq;
-    }
 
     // 修改 generateConsensusSequence：按批读取序列并调用 processBatchParallelWithSoA 来处理
     std::string generateConsensusSequence(const FilePath& aligned_fasta,
@@ -684,5 +555,6 @@ namespace consensus
 
         return consensus_seq;
     }
+
 
 } // namespace consensus
