@@ -127,22 +127,13 @@ namespace consensus
     // 输出 json：用 cereal JSON archive
     void writeCountsJson(const FilePath& out_json, const ConsensusJson& cj);
 
-    // batch 折中方案：
-    // - 1 个线程（master）读取 batch_size 条序列到内存
-    // - 其余线程并行按列统计 counts
-    //
-    // seq_limit: 0 表示全部；>0 表示最多处理前 seq_limit 条
-    // threads: 总线程数（<=0 自动取 omp_get_max_threads）
-    // batch_size: 每批序列数量（建议 64~1024，按 aln_len 与内存调参）
-    //
-    // 返回共识序列（长度=对齐长度，可能包含 '-'）
-
+    // 单线程版本：功能等价于 generateConsensusSequence，但在当前线程中完成全部工作，
+    // 便于调试或在无 OpenMP/多线程场景下使用。此版本为“读一条写一条”，不使用批处理。
     std::string generateConsensusSequence(const FilePath& aligned_fasta,
-                                                    const FilePath& out_fasta,
-                                                    const FilePath& out_json,
-                                                    std::uint64_t seq_limit,
-                                                    int threads,
-                                                    std::size_t batch_size = 512);
+                                                       const FilePath& out_fasta,
+                                                       const FilePath& out_json,
+                                                       std::uint64_t seq_limit,
+                                                       int thread);
 
 } // namespace consensus
 

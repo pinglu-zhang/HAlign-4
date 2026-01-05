@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-
+#include <thread>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -129,103 +129,62 @@ static void writeLargeAlignedFasta(const fs::path& p, std::size_t n_seqs, std::s
 
 static void runOnePerf(std::size_t n_seqs) {
     constexpr std::size_t LEN   = 30000;
-    constexpr std::size_t BATCH = 512;
 
+    // 简化版：仅在显式开启 perf 时运行；写入输入（如需），然后直接调用共识计算并计时。
     if (!perfEnabled()) {
-        MESSAGE("perf disabled (HALIGN4_RUN_PERF not set) - skip");
-        return;
-    }
-
-    const std::size_t max_n = perfMaxN();
-    if (n_seqs > max_n) {
-        MESSAGE("skip perf n_seqs=" << n_seqs
-                << " because HALIGN4_PERF_MAX_N=" << max_n);
+        MESSAGE("perf disabled - skip");
         return;
     }
 
     fs::path base = perfBaseDir();
-    const std::uint64_t need = estimateFastaBytes(n_seqs, LEN);
-
-    // 大于 1GiB 的输入强制要求指定 HALIGN4_PERF_DIR（避免写到 build 目录）
-    if (need > (1ull << 30) && base.empty()) {
-        MESSAGE("skip perf n_seqs=" << n_seqs
-                << " because input is huge (~" << (need / (1024.0*1024.0*1024.0)) << " GiB). "
-                << "Set HALIGN4_PERF_DIR to a fast disk with enough space.");
-        return;
-    }
-
-    if (base.empty()) {
-        base = fs::temp_directory_path(); // 小数据允许用 /tmp
-    }
+    if (base.empty()) base = fs::temp_directory_path();
 
     fs::path dir = base / "halign4_tests_perf";
     std::error_code ec;
     fs::create_directories(dir, ec);
     REQUIRE_MESSAGE(!ec, "cannot create perf dir: " << dir.string() << " (" << ec.message() << ")");
 
-    if (!hasEnoughDisk(dir, need)) {
-        std::error_code ec2;
-        auto sp = fs::space(dir, ec2);
-        MESSAGE("skip perf due to disk space. need_bytes=" << need
-                << " available_bytes=" << (ec2 ? 0 : (std::uint64_t)sp.available)
-                << " dir=" << dir.string());
-        return;
-    }
-
     fs::path in_fa  = dir / ("aligned_" + std::to_string(n_seqs) + ".fasta");
     fs::path out_fa = dir / ("cons_"    + std::to_string(n_seqs) + ".fasta");
     fs::path out_js = dir / ("counts_"  + std::to_string(n_seqs) + ".json");
 
     const bool reuse = envInt("HALIGN4_PERF_REUSE_INPUT", 1) != 0;
-
-    // threads：默认 0（用 omp_get_max_threads），但允许 HALIGN4_PERF_THREADS 覆盖
-    const int threads_override = envInt("HALIGN4_PERF_THREADS", 0);
+    int threads_override = envInt("HALIGN4_PERF_THREADS", 0);
+    if (threads_override <= 0) {
+        unsigned int hc = std::thread::hardware_concurrency();
+        threads_override = static_cast<int>(hc ? hc : 1u);
+    }
 
     auto cleanup = [&]() {
-        std::error_code ec3;
-        fs::remove(in_fa, ec3);
-        fs::remove(out_fa, ec3);
-        fs::remove(out_js, ec3);
+        std::error_code e2;
+        fs::remove(in_fa, e2);
+        fs::remove(out_fa, e2);
+        fs::remove(out_js, e2);
     };
 
     try {
-        MESSAGE("perf start: n_seqs=" << n_seqs
-                << " len=" << LEN
-                << " batch=" << BATCH
-                << " threads_override=" << threads_override
-                << " dir=" << dir.string());
+        MESSAGE("perf start: n_seqs=" << n_seqs << " len=" << LEN << " threads=" << threads_override);
 
-        // 1) 写输入（单独计时）
-        auto w0 = std::chrono::steady_clock::now();
         if (!reuse || !fs::exists(in_fa)) {
             writeLargeAlignedFasta(in_fa, n_seqs, LEN);
         } else {
             MESSAGE("reuse existing input: " << in_fa.string());
         }
-        auto w1 = std::chrono::steady_clock::now();
-        MESSAGE("input_ready: seconds=" << std::chrono::duration<double>(w1 - w0).count()
-                << " path=" << in_fa.string());
 
-        // 2) 跑算法（单独计时）
         auto t0 = std::chrono::steady_clock::now();
         (void)consensus::generateConsensusSequence(
             in_fa, out_fa, out_js,
-            /*seq_limit=*/0,
-            /*threads=*/threads_override,
-            /*batch_size=*/BATCH
+            /*seq_limit=*/0, threads_override
         );
         auto t1 = std::chrono::steady_clock::now();
 
         MESSAGE("compute_done: seconds=" << std::chrono::duration<double>(t1 - t0).count()
-                << " out_fa=" << out_fa.string()
-                << " out_js=" << out_js.string());
+                << " out_fa=" << out_fa.string() << " out_js=" << out_js.string());
 
-        // 默认清理（你也可以把 cleanup 关掉以便复用输入）
         if (envInt("HALIGN4_PERF_CLEANUP", 1) != 0) {
             cleanup();
         }
     } catch (...) {
-        // 发生异常尽量清理；但注意：SIGKILL 这类强杀无法进入 catch
         if (envInt("HALIGN4_PERF_CLEANUP", 1) != 0) {
             cleanup();
         }
@@ -253,7 +212,7 @@ TEST_CASE("generateConsensusSequence - correctness (gap majority is ignored)") {
 
     std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        0, 4, 2
+        0, 1
     );
 
     CHECK(cons == "ACGTA");
@@ -280,7 +239,7 @@ TEST_CASE("generateConsensusSequence - tie breaks to A (A > C > G > T > U)") {
 
     std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        0, 2, 2
+        0, 1
     );
 
     CHECK(cons == "A");
@@ -302,7 +261,7 @@ TEST_CASE("generateConsensusSequence - all gaps => consensus becomes A") {
 
     std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        0, 4, 2
+        0, 1
     );
 
     CHECK(cons == "AAA");
@@ -320,7 +279,7 @@ TEST_CASE("generateConsensusSequence - single sequence returns same") {
 
     std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        0, 1, 1
+        0, 1
     );
 
     CHECK(cons == "ACGTACGT");
@@ -342,7 +301,7 @@ TEST_CASE("generateConsensusSequence - U (uracil) handling") {
 
     std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        0, 2, 2
+        0, 1
     );
 
     CHECK(cons.size() == 5);
@@ -365,13 +324,13 @@ TEST_CASE("generateConsensusSequence - seq_limit affects result") {
 
     std::string cons_all = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        0, 1, 2
+        0, 1
     );
     CHECK(cons_all == "C");
 
     std::string cons_lim = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
-        2, 1, 2
+        2, 1
     );
     CHECK(cons_lim == "A");
 }
@@ -385,7 +344,7 @@ TEST_CASE("generateConsensusSequence - empty input throws") {
     writeTextFile(in_fa, "");
 
     CHECK_THROWS_AS(
-        consensus::generateConsensusSequence(in_fa, out_fa, out_js, 0, 1, 1),
+        consensus::generateConsensusSequence(in_fa, out_fa, out_js, 0, 1),
         std::runtime_error
     );
 }
@@ -401,15 +360,16 @@ TEST_CASE("len=30000 n=100 batch=512 threads=max") {
 }
 
 
-    TEST_CASE("len=30000 n=10000 batch=512 threads=max") {
+    TEST_CASE("len=30000 n=1000 batch=512 threads=max") {
     runOnePerf(1000);
 }
-// TEST_CASE("len=30000 n=100000 batch=512 threads=max") {
-//     runOnePerf(100'000);
-// }
+
+TEST_CASE("len=30000 n=10000 batch=512 threads=max") {
+    runOnePerf(10000);
+}
 //
-// TEST_CASE("len=30000 n=1000000 batch=512 threads=max") {
-//     runOnePerf(1'000'000);
-// }
+TEST_CASE("len=30000 n=100000 batch=512 threads=max") {
+     runOnePerf(100000);
+}
 
 } // TEST_SUITE(consensus_perf)
