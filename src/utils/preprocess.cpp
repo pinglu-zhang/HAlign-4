@@ -210,3 +210,4 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
     const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
     spdlog::info("Finished consensus alignment. Total elapsed: {:.3f} s", elapsed_s);
 }
+

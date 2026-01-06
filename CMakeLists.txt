@@ -28,6 +28,7 @@ add_executable(halign4
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/cluster/cluster.cpp
+        src/seed/minimizer.cpp
 )
 
 find_package(CURL)

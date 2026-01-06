@@ -29,6 +29,7 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/utils/file_io.cpp"
         "${HALIGN4_ROOT}/src/consensus/selector.cpp"
         "${HALIGN4_ROOT}/src/consensus/consensus.cpp"
+        "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
 )
 
 target_include_directories(halign4_test_support PUBLIC

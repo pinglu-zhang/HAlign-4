@@ -6,6 +6,10 @@
 #include <string_view>
 #include <stdexcept>
 #include <utility>
+#include <vector>
+#include <string>
+#include <cstddef>
+#include <algorithm>
 
 // ================================================================
 // 抽象 seed 接口（不绑定具体 minimizer/syncmer/strobemer 实现）
@@ -124,7 +128,7 @@ namespace seed
     template <typename HitT>
     inline constexpr std::uint32_t get_span(const HitT& h) noexcept { return h.span(); }
 
-    // 只看 hash 的比较器（适用于 sort+unique / Jaccard / containment 等）
+    // 只看 hash 的比較器（適用於 sort+unique / Jaccard / containment 等）
     struct HashOnlyLess
     {
         template <typename M>
@@ -161,6 +165,7 @@ namespace minimizer
 
         constexpr hash_t hash() const noexcept { return h; }
     };
+    using MinimizerHashes = std::vector<MinimizerHash>;
 
     // ------------------------- minimizer hit（带位置） -------------------------
     // 用于 chaining/定位：需要知道落在哪条序列(rid)、什么位置(pos)、方向(strand)以及覆盖长度(span)。
@@ -238,6 +243,62 @@ namespace minimizer
 
     static_assert(sizeof(MinimizerHit) == 16, "MinimizerHit should be 16 bytes when packed as (x,y)");
 
+
+    // =====================================================================
+    // extractMinimizerHash
+    // ---------------------------------------------------------------------
+    // 从一条输入序列中提取 minimizer 的“hash-only”列表（用于相似度估计/聚类）。
+    //
+    // 参数：
+    //   seq       : 输入序列
+    //   k         : k-mer 大小
+    //   w         : 窗口大小（以 k-mer 为单位）
+    //   is_forward: true 表示正向；false 表示反向互补后再提取
+    //
+    // 返回：
+    //   minimizer hash 列表（按扫描顺序）。
+    //
+    // 注意：这里只提供声明；实现请放到对应的 .cpp 文件中。
+    // =====================================================================
+    MinimizerHashes extractMinimizerHash(const std::string& seq,
+                                                    std::size_t k,
+                                                    std::size_t w,
+                                                    bool is_forward);
+
+
+    // =============================================================
+    // nt4_table
+    // -------------------------------------------------------------
+    // 把输入字符映射为 2-bit 编码（0..3），其余字符为 invalid(4)。
+    // - 'A'/'a' -> 0
+    // - 'C'/'c' -> 1
+    // - 'G'/'g' -> 2
+    // - 'T'/'t' -> 3
+    // - 'U'/'u' -> 3   (RNA 的 U 当作 T)
+    // - 其它（包括 'N'/'n'、'-' 等） -> 4
+    //
+    // 设计目的：
+    // - 让高性能实现（rolling k-mer/minimap2风格）可以 O(1) 查表，避免 switch 分支。
+    // - 表放头文件里，多个 .cpp 复用，不用重复写 256 项初始化。
+    // =============================================================
+    inline constexpr std::uint8_t nt4_table[256] = {
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,3,3,4,4,
+        4,4,4,4,4,4,4,4,4,4,0,4,1,4,4,4,
+        2,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,
+        3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4
+    };
 
 } // namespace minimizer
 

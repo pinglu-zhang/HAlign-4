@@ -27,6 +27,7 @@ struct Options {
     // 并行与算法参数
     int threads = [](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }(); // -t：线程数，默认为 CPU 核心数
     int kmer_size = 15;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
+    int kmer_window = 10;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
     int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
 
     bool keep_length = false;   // --keep-length：是否在后续处理保持原始序列长度（影响共识/校正策略）
@@ -66,7 +67,11 @@ static void setupCli(CLI::App& app, Options& opt) {
 
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size")
         ->default_val(15)
-        ->check(CLI::Range(1, 4096));
+        ->check(CLI::Range(4, 31));
+
+    app.add_option("--kmer-window", opt.kmer_window, "Minimizer window size (w, in number of k-mers)")
+        ->default_val(10)
+        ->check(CLI::Range(1, 1000000));
 
     app.add_option("--cons-n", opt.cons_n, "Number of sequences for consensus")
         ->default_val(1000)
@@ -100,6 +105,7 @@ static void logParsedOptions(const Options& opt) {
         {"msa_cmd", toString(opt.msa_cmd, valW)},
         {"threads", std::to_string(opt.threads)},
         {"kmer_size", std::to_string(opt.kmer_size)},
+        {"kmer_window", std::to_string(opt.kmer_window)},
         {"cons_n", std::to_string(opt.cons_n)},
         {"keep_length", boolToStr(opt.keep_length)}
     };
@@ -152,7 +158,14 @@ static void checkOption(Options& opt) {
     // 数值参数相关：仍在这里检查
     if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
     if (opt.kmer_size <= 0) throw std::runtime_error("kmer_size must be > 0");
+    if (opt.kmer_window <= 0) throw std::runtime_error("kmer_window must be > 0");
     if (opt.cons_n <= 0) throw std::runtime_error("cons_n must be > 0");
+
+    // k 与 w 的常见约束（贴近 minimap2 的可实现范围）
+    if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
+    if (opt.kmer_window >= 256) {
+        spdlog::warn("kmer_window >= 256 may be slow/unsupported by the fast minimizer path; current value: {}", opt.kmer_window);
+    }
 
     // workdir：Debug 下允许非空，Release 下必须空（与你现有逻辑一致）
 #ifdef _DEBUG
