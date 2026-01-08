@@ -13,37 +13,45 @@ TEST_SUITE("mash")
 {
     TEST_CASE("intersectionSizeSortedUnique")
     {
-        std::vector<mash::hash_t> a{1, 2, 3, 10};
-        std::vector<mash::hash_t> b{2, 3, 4, 5, 10, 11};
+        std::vector<hash_t> a{1, 2, 3, 10};
+        std::vector<hash_t> b{2, 3, 4, 5, 10, 11};
         CHECK(mash::intersectionSizeSortedUnique(a, b) == 3);
     }
 
     TEST_CASE("sketchFromSequence - empty & sketch_size=0")
     {
         const std::size_t k = 15;
-        const std::size_t w = 10;
+        const std::size_t sketch_size = 0;
 
-        auto sk = mash::sketchFromSequence(std::string("ACGTACGT"), k, w, /*sketch_size*/ 0);
+        auto sk = mash::sketchFromSequence(std::string("ACGTACGT"), k, sketch_size);
         CHECK(sk.empty());
 
-        auto sk2 = mash::sketchFromSequence(std::string(""), k, w, /*sketch_size*/ 100);
+        auto sk2 = mash::sketchFromSequence(std::string(""), k, 100);
         CHECK(sk2.empty());
     }
 
     TEST_CASE("jaccard - empty sets")
     {
-        mash::Sketch a{15, {}};
-        mash::Sketch b{15, {}};
+        mash::Sketch a;
+        a.k = 15;
+        mash::Sketch b;
+        b.k = 15;
         CHECK(mash::jaccard(a, b) == doctest::Approx(1.0));
 
-        mash::Sketch c{15, {1, 2, 3}};
+        mash::Sketch c;
+        c.k = 15;
+        c.hashes = {1, 2, 3};
         CHECK(mash::jaccard(a, c) == doctest::Approx(0.0));
     }
 
     TEST_CASE("jaccard - identical sketches")
     {
-        mash::Sketch a{21, {1, 2, 3, 4}};
-        mash::Sketch b{21, {1, 2, 3, 4}};
+        mash::Sketch a;
+        a.k = 21;
+        a.hashes = {1, 2, 3, 4};
+        mash::Sketch b;
+        b.k = 21;
+        b.hashes = {1, 2, 3, 4};
         CHECK(mash::jaccard(a, b) == doctest::Approx(1.0));
         CHECK(mash::mashDistanceFromJaccard(1.0, 21) == doctest::Approx(0.0));
         CHECK(mash::aniFromJaccard(1.0, 21) == doctest::Approx(1.0));
@@ -51,8 +59,12 @@ TEST_SUITE("mash")
 
     TEST_CASE("jaccard - disjoint sketches")
     {
-        mash::Sketch a{21, {1, 2, 3}};
-        mash::Sketch b{21, {4, 5, 6}};
+        mash::Sketch a;
+        a.k = 21;
+        a.hashes = {1, 2, 3};
+        mash::Sketch b;
+        b.k = 21;
+        b.hashes = {4, 5, 6};
         CHECK(mash::jaccard(a, b) == doctest::Approx(0.0));
         CHECK(!std::isfinite(mash::mashDistanceFromJaccard(0.0, 21)));
         CHECK(mash::aniFromJaccard(0.0, 21) == doctest::Approx(0.0));
@@ -61,16 +73,15 @@ TEST_SUITE("mash")
     TEST_CASE("sketchFromSequence + jaccard smoke")
     {
         const std::size_t k = 15;
-        const std::size_t w = 10;
         const std::size_t sketch_size = 200;
 
         const std::string s1 = "ACGTACGTACGTACGTACGTACGTACGTACGT";
         const std::string s2 = "ACGTACGTACGTACGTACGTACGTACGTACGT";
         const std::string s3 = "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT";
 
-        auto sk1 = mash::sketchFromSequence(s1, k, w, sketch_size);
-        auto sk2 = mash::sketchFromSequence(s2, k, w, sketch_size);
-        auto sk3 = mash::sketchFromSequence(s3, k, w, sketch_size);
+        auto sk1 = mash::sketchFromSequence(s1, k, sketch_size);
+        auto sk2 = mash::sketchFromSequence(s2, k, sketch_size);
+        auto sk3 = mash::sketchFromSequence(s3, k, sketch_size);
 
         CHECK(sk1.k == k);
         CHECK(sk1.size() <= sketch_size);
@@ -101,15 +112,14 @@ TEST_SUITE("mash")
 
         const std::size_t N = []{
             const char* e = std::getenv("MASH_PERF_N");
-            return e ? static_cast<std::size_t>(std::stoull(e)) : 10000ULL;
+            return e ? static_cast<std::size_t>(std::stoull(e)) : 30000ULL;
         }();
         const std::size_t L = []{
             const char* e = std::getenv("MASH_PERF_L");
             return e ? static_cast<std::size_t>(std::stoull(e)) : 30000ULL;
         }();
-        const std::size_t k = 31;
-        const std::size_t w = 10;
-        const std::size_t sketch_size = 200;
+        const std::size_t k = 21;
+        const std::size_t sketch_size = 2000;
 
         std::mt19937_64 rng(123456);
         std::vector<std::string> seqs;
@@ -118,15 +128,14 @@ TEST_SUITE("mash")
 
         auto t0 = std::chrono::steady_clock::now();
         for (const auto &s : seqs) {
-            volatile auto sk = mash::sketchFromSequence(s, k, w, sketch_size);
+            volatile auto sk = mash::sketchFromSequence(s, k, sketch_size);
             (void)sk;
         }
         auto t1 = std::chrono::steady_clock::now();
 
         const double seconds = std::chrono::duration<double>(t1 - t0).count();
-        std::cout << "mash_perf: N=" << N << " L=" << L << " took " << seconds << "s\n";
+        MESSAGE("mash_perf: N=" << N << " L=" << L << " took " << seconds << "s");
 
         CHECK(true);
     }
 }
-

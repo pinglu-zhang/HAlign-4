@@ -1,3 +1,8 @@
+// mash.cpp
+// -----------------
+// 该文件实现了简化版的 Mash 风格 sketch 与相关的度量函数（Jaccard、Mash 距离、ANI 推断等）。
+// 我们在注释中说明设计考虑、参数意义、边界情况与实现细节，便于性能测试与维护。
+
 #include "mash.h"
 
 #include <algorithm>
@@ -5,23 +10,16 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-
-#include "MurmurHash3.h"
+#include <queue>
+#include <cstring> // for memcmp
+#include <unordered_set>
+#include "hash.h"
+#include "robin_hood.h"
 
 namespace mash
 {
-    static inline std::uint8_t nt4(unsigned char c) noexcept
-    {
-        switch (c) {
-        case 'A': case 'a': return 0;
-        case 'C': case 'c': return 1;
-        case 'G': case 'g': return 2;
-        case 'T': case 't': return 3;
-        case 'U': case 'u': return 3;
-        default: return 4;
-        }
-    }
-
+    // clamp01: 将 double 值限制在 [0,1] 范围内的辅助函数
+    // 用于确保返回概率/比例型值的数值稳定性
     static inline double clamp01(double x) noexcept
     {
         if (x < 0.0) return 0.0;
@@ -29,6 +27,136 @@ namespace mash
         return x;
     }
 
+    Sketch sketchFromSequence(const std::string& seq,
+                              std::size_t k,
+                              std::size_t sketch_size,
+                              bool noncanonical,
+                              int seed)
+    {
+        Sketch sk;
+        sk.k = k;
+        sk.noncanonical = noncanonical;
+
+        if (k == 0 || sketch_size == 0 || seq.size() < k) return sk;
+        if (k > 32) return sk;
+
+        const std::uint64_t mask = (1ULL << (2 * k)) - 1ULL;
+        const std::uint64_t shift = 2ULL * (k - 1);
+
+        std::uint64_t fwd = 0;
+        std::uint64_t rev = 0;
+        std::size_t valid = 0;
+
+        // max-heap (top is largest), keep bottom-k
+        std::priority_queue<hash_t> maxHeap;
+        robin_hood::unordered_set<hash_t> seen;
+        seen.reserve(sketch_size * 2 + 1);
+
+        for (std::size_t i = 0; i < seq.size(); ++i)
+        {
+            const uint8_t c = nt4_table[static_cast<unsigned char>(seq[i])];
+            if (c >= 4)
+            {
+                fwd = rev = 0;
+                valid = 0;
+                continue;
+            }
+
+            fwd = ((fwd << 2) | c) & mask;
+            rev = (rev >> 2) | (std::uint64_t(3U ^ c) << shift);
+
+            if (valid < k) ++valid;
+            if (valid < k) continue;
+
+            const std::uint64_t code = noncanonical ? fwd : std::min(fwd, rev);
+            const hash_t h = getHash2bit(code, static_cast<std::uint32_t>(seed));
+
+            if (!seen.insert(h).second) continue;
+
+            if (maxHeap.size() < sketch_size)
+            {
+                maxHeap.push(h);
+            }
+            else if (h < maxHeap.top())
+            {
+                // evict current largest
+                seen.erase(maxHeap.top());
+                maxHeap.pop();
+                maxHeap.push(h);
+            }
+        }
+
+        sk.hashes.reserve(maxHeap.size());
+        while (!maxHeap.empty())
+        {
+            sk.hashes.push_back(maxHeap.top());
+            maxHeap.pop();
+        }
+
+        std::sort(sk.hashes.begin(), sk.hashes.end());
+
+        return sk;
+    }
+
+    // jaccard: 基于两个已排序且唯一化的 sketch 向量计算 Jaccard 相似度
+    // 返回范围在 [0,1]，特殊 case：两个空集合返回 1.0（定义上的选择，表示完全相同的空集）
+    double jaccard(const Sketch& a, const Sketch& b)
+    {
+        if (a.k != b.k) throw std::invalid_argument("mash::jaccard: mismatched k");
+
+        if (a.hashes.empty() && b.hashes.empty()) return 1.0;
+        if (a.hashes.empty() || b.hashes.empty()) return 0.0;
+
+        const std::size_t inter = intersectionSizeSortedUnique(a.hashes, b.hashes);
+        const std::size_t uni = a.hashes.size() + b.hashes.size() - inter;
+        if (uni == 0) return 1.0;
+        return static_cast<double>(inter) / static_cast<double>(uni);
+    }
+
+    // mashDistanceFromJaccard: 将 Jaccard 相似性转换为 Mash 距离（基于 Mash 的数学推导）
+    // 公式：x = (2*j)/(1+j) ; distance = -ln(x) / k
+    // 注意边界情况的处理：当 j<=0 或 x<=0 时返回 +inf；当 j>=1 时返回 0
+    double mashDistanceFromJaccard(double j, std::size_t k)
+    {
+        if (k == 0) throw std::invalid_argument("mash::mashDistanceFromJaccard: k must be > 0");
+        if (!(j > 0.0)) return std::numeric_limits<double>::infinity();
+        if (j >= 1.0) return 0.0;
+
+        const double x = (2.0 * j) / (1.0 + j);
+        if (!(x > 0.0)) return std::numeric_limits<double>::infinity();
+        return -std::log(x) / static_cast<double>(k);
+    }
+
+    // aniFromJaccard: 基于 Jaccard 估计平均核苷酸相似度（ANI），使用 Mash 的近似关系
+    // 公式：x = (2*j)/(1+j) ; ANI ~ x^(1/k)
+    // 返回值被 clamp 到 [0,1]
+    double aniFromJaccard(double j, std::size_t k)
+    {
+        if (k == 0) throw std::invalid_argument("mash::aniFromJaccard: k must be > 0");
+        if (!(j > 0.0)) return 0.0;
+        if (j >= 1.0) return 1.0;
+
+        const double x = (2.0 * j) / (1.0 + j);
+        if (!(x > 0.0)) return 0.0;
+
+        return clamp01(std::pow(x, 1.0 / static_cast<double>(k)));
+    }
+
+    // aniFromMashDistance: 从 Mash 距离反推 ANI：ANI ~ exp(-d)
+    // 对无穷大或非有限输入做防护处理，输出限定在 [0,1]
+    double aniFromMashDistance(double d)
+    {
+        if (!std::isfinite(d)) return 0.0;
+        if (d <= 0.0) return 1.0;
+        return clamp01(std::exp(-d));
+    }
+
+    // intersectionSizeSortedUnique
+    // 计算两个已排序且唯一化（unique）的哈希向量的交集大小。算法为经典的双指针线性扫描。
+    // 要求输入 a,b 已经满足升序且无重复；该函数不会修改输入，只返回交集元素数量（不返回集合本身）。
+    // 时间复杂度：O(|a| + |b|)。适用于 sketch 的哈希集合比较。
+    // 注意：由于 hash_u 是联合体，调用者需要确保两个向量使用相同的 use64 设置。
+    // 这个函数主要用于向后兼容，建议直接使用 jaccard 函数。
     std::size_t intersectionSizeSortedUnique(const std::vector<hash_t>& a,
                                              const std::vector<hash_t>& b) noexcept
     {
@@ -47,112 +175,6 @@ namespace mash
             }
         }
         return inter;
-    }
-
-    static inline hash_t murmur64(const void* data, int len, std::uint32_t seed) noexcept
-    {
-        std::uint64_t out[2] = {0, 0};
-        MurmurHash3_x64_128(data, len, seed, out);
-        return static_cast<hash_t>(out[0]);
-    }
-
-    // canonical=false: 使用 is_forward 决定方向
-    // canonical=true : 无视 is_forward，对每个 k-mer 取 min(fwd, revcomp)
-    // 这里为了接口兼容，is_forward=true 表示 forward-only；is_forward=false 表示 revcomp-only。
-    Sketch sketchFromSequence(const std::string& seq,
-                             std::size_t k,
-                             std::size_t /*w*/,
-                             std::size_t sketch_size,
-                             bool is_forward)
-    {
-        Sketch sk;
-        sk.k = k;
-
-        if (k == 0 || sketch_size == 0) return sk;
-        if (seq.size() < k) return sk;
-
-        // 简化：仅支持 k<=31 的 2-bit rolling（与 Mash 默认 DNA k 限制类似）
-        if (k > 31) return sk;
-
-        const std::uint64_t mask = (1ULL << (2 * k)) - 1ULL;
-        const std::uint64_t shift = 2ULL * (k - 1);
-        std::uint64_t fwd = 0;
-        std::uint64_t rev = 0;
-        std::size_t valid = 0;
-
-        // 使用 Mash 的思路：对 k-mer 字符串做 MurmurHash3
-        // 这里不分配 substr；用 rolling code 的 8-byte 表示作为 key（更快/更少内存）。
-        const std::uint32_t seed = 42; // 轻量实现固定 seed；如需可后续放到参数里
-
-        sk.hashes.reserve(std::min<std::size_t>(sketch_size, seq.size() - k + 1));
-
-        for (std::size_t i = 0; i < seq.size(); ++i) {
-            const std::uint8_t c = nt4(static_cast<unsigned char>(seq[i]));
-            if (c >= 4) {
-                fwd = rev = 0;
-                valid = 0;
-                continue;
-            }
-
-            fwd = ((fwd << 2) | c) & mask;
-            rev = (rev >> 2) | (std::uint64_t(3U ^ c) << shift);
-
-            if (valid < k) ++valid;
-            if (valid < k) continue;
-
-            const std::uint64_t code = is_forward ? fwd : rev;
-            const hash_t h = murmur64(&code, static_cast<int>(sizeof(code)), seed);
-            sk.hashes.push_back(h);
-        }
-
-        std::sort(sk.hashes.begin(), sk.hashes.end());
-        sk.hashes.erase(std::unique(sk.hashes.begin(), sk.hashes.end()), sk.hashes.end());
-        if (sk.hashes.size() > sketch_size) sk.hashes.resize(sketch_size);
-
-        return sk;
-    }
-
-    double jaccard(const Sketch& a, const Sketch& b)
-    {
-        if (a.k != b.k) throw std::invalid_argument("mash::jaccard: mismatched k");
-
-        if (a.hashes.empty() && b.hashes.empty()) return 1.0;
-        if (a.hashes.empty() || b.hashes.empty()) return 0.0;
-
-        const std::size_t inter = intersectionSizeSortedUnique(a.hashes, b.hashes);
-        const std::size_t uni = a.hashes.size() + b.hashes.size() - inter;
-        if (uni == 0) return 1.0;
-        return static_cast<double>(inter) / static_cast<double>(uni);
-    }
-
-    double mashDistanceFromJaccard(double j, std::size_t k)
-    {
-        if (k == 0) throw std::invalid_argument("mash::mashDistanceFromJaccard: k must be > 0");
-        if (!(j > 0.0)) return std::numeric_limits<double>::infinity();
-        if (j >= 1.0) return 0.0;
-
-        const double x = (2.0 * j) / (1.0 + j);
-        if (!(x > 0.0)) return std::numeric_limits<double>::infinity();
-        return -std::log(x) / static_cast<double>(k);
-    }
-
-    double aniFromJaccard(double j, std::size_t k)
-    {
-        if (k == 0) throw std::invalid_argument("mash::aniFromJaccard: k must be > 0");
-        if (!(j > 0.0)) return 0.0;
-        if (j >= 1.0) return 1.0;
-
-        const double x = (2.0 * j) / (1.0 + j);
-        if (!(x > 0.0)) return 0.0;
-
-        return clamp01(std::pow(x, 1.0 / static_cast<double>(k)));
-    }
-
-    double aniFromMashDistance(double d)
-    {
-        if (!std::isfinite(d)) return 0.0;
-        if (d <= 0.0) return 1.0;
-        return clamp01(std::exp(-d));
     }
 
 } // namespace mash

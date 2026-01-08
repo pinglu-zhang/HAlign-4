@@ -28,6 +28,7 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/utils/cmd.cpp"
         "${HALIGN4_ROOT}/src/utils/file_io.cpp"
         "${HALIGN4_ROOT}/src/utils/MurmurHash3.cpp"
+        "${HALIGN4_ROOT}/src/utils/hash.cpp"
         "${HALIGN4_ROOT}/src/consensus/selector.cpp"
         "${HALIGN4_ROOT}/src/consensus/consensus.cpp"
         "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
@@ -86,7 +87,6 @@ add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/test_read_fasta.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_minimizer.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_mash.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/test_mash_perf.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)

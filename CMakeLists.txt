@@ -26,6 +26,7 @@ add_executable(halign4
         src/utils/cmd.cpp
         src/utils/file_io.cpp
         src/utils/MurmurHash3.cpp
+        src/utils/hash.cpp
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/cluster/cluster.cpp

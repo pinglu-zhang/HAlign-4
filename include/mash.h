@@ -5,10 +5,28 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "hash.h"
 
 namespace mash
 {
-    using hash_t = std::uint64_t;
+    inline constexpr std::uint8_t nt4_table[256] = {
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,3,3,4,4,
+        4,4,4,4,4,4,4,4,4,4,0,4,1,4,4,4,
+        2,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,
+        3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4
+    };
 
     // ------------------------------------------------------------
     // Sketch (sorted unique bottom-k hashes)
@@ -16,12 +34,12 @@ namespace mash
     struct Sketch
     {
         std::size_t k = 0;
+        bool noncanonical = true;
         std::vector<hash_t> hashes;
 
         std::size_t size() const noexcept { return hashes.size(); }
         bool empty() const noexcept { return hashes.empty(); }
     };
-
 
     // ------------------------------------------------------------
     // Construction
@@ -30,9 +48,9 @@ namespace mash
     // 注意：mash 模块与 seed/minimizer 无关；这里的 w 仅为兼容旧接口保留，当前实现不使用。
     Sketch sketchFromSequence(const std::string& seq,
                              std::size_t k,
-                             std::size_t w,
                              std::size_t sketch_size,
-                             bool is_forward = true);
+                             bool noncanonical = true,
+                             int seed = 0);
 
 
     // ------------------------------------------------------------
