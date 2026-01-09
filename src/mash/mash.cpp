@@ -131,9 +131,9 @@ namespace mash
         // 最后排序是必须的：
         // - intersection/jaccard 需要 sorted unique
         // - 其他地方也依赖 sketch 有序
-        //std::sort(sk.hashes.begin(), sk.hashes.end());
+        std::sort(sk.hashes.begin(), sk.hashes.end());
 
-        return sk;
+        return std::move(sk);
     }
 
     // jaccard: 基于两个已排序且唯一化的 sketch 向量计算 Jaccard 相似度
@@ -146,7 +146,7 @@ namespace mash
         if (a.hashes.empty() || b.hashes.empty()) return 0.0;
 
         const std::size_t inter = intersectionSizeSortedUnique(a.hashes, b.hashes);
-        const std::size_t uni = a.hashes.size() + b.hashes.size() - inter;
+        const std::size_t uni = std::min(a.hashes.size(), b.hashes.size());
         if (uni == 0) return 1.0;
         return static_cast<double>(inter) / static_cast<double>(uni);
     }
@@ -212,6 +212,97 @@ namespace mash
             }
         }
         return inter;
+    }
+
+    bloom_filter filterFromSketch(const Sketch& sk, double false_positive_rate, int seed)
+    {
+        // ------------------------------------------------------------
+        // 基于 sketch 构建 Bloom Filter
+        // ------------------------------------------------------------
+        // 设计目标：
+        // 1) 让后续的 contains(hash) 查询尽可能快；
+        // 2) false_positive_rate 可控（近似）；
+        // 3) 对空 sketch 友好：返回一个默认构造的 bloom_filter（operator!() 为 true）。
+        //
+        // bloom_filter.hpp 的参数模型：
+        // - projected_element_count: 预计插入的元素数量
+        // - false_positive_probability: 目标误判率
+        // - random_seed: 影响盐值生成，从而影响 hash 函数族
+        //
+        // 注意：这里插入的是 hash_t（uint64_t）本身，也就是把“已经 hash 好的值”再当做 key。
+        // 这和直接插入原始 k-mer 序列不同，但对于集合成员查询来说是合理的。
+        // ------------------------------------------------------------
+
+        bloom_filter bf;
+
+        if (sk.hashes.empty())
+        {
+            return bf;
+        }
+
+        bloom_parameters p;
+        p.projected_element_count = static_cast<unsigned long long>(sk.hashes.size());
+        p.false_positive_probability = false_positive_rate;
+        // 避免 random_seed 落到 bloom_filter.hpp 中的非法范围（0 或全 1）
+        {
+            const std::uint64_t s = static_cast<std::uint64_t>(static_cast<std::uint32_t>(seed));
+            p.random_seed = (s == 0ULL) ? 0xA5A5A5A55A5A5A5AULL : (0xA5A5A5A55A5A5A5AULL ^ (s * 0x9E3779B97F4A7C15ULL));
+            if (p.random_seed == 0ULL) p.random_seed = 0x1ULL;
+            if (p.random_seed == 0xFFFFFFFFFFFFFFFFULL) p.random_seed = 0xFFFFFFFFFFFFFFFEULL;
+        }
+
+        // 计算 bloom filter 的最优参数（bit 数与 hash 函数个数）
+        if (!p.compute_optimal_parameters())
+        {
+            // 参数非法/计算失败时，退化为默认构造（空）
+            return bloom_filter{};
+        }
+
+        bf = bloom_filter(p);
+
+        // 插入所有 hash 值
+        for (const hash_t hv : sk.hashes)
+        {
+            bf.insert(hv);
+        }
+
+        return bf;
+    }
+
+    double jaccard(const bloom_filter& a, const Sketch& b)
+    {
+        // ------------------------------------------------------------
+        // BloomFilter vs Sketch 的 Jaccard（近似）
+        // ------------------------------------------------------------
+        // 我们在 Sketch-Sketch 的实现里使用： inter / min(|A|,|B|)
+        // 这是 Mash/MinHash 场景常用的近似定义（当两边都是 bottom-k 集时）。
+        //
+        // 这里 a 是 BloomFilter（由某个 sketch 构建），它本身不包含“集合大小信息”，
+        // 因此：
+        // - 交集：通过对 b.hashes 中每个 hv 做 contains 查询来估计
+        // - 并集大小：仍使用 min(|A|,|B|) 的约定，但 |A| 取 a.element_count()
+        //   （构建时插入的元素数，注意它可能大于真实 unique 数，但本项目的 Sketch 本身是 unique）
+        //
+        // 边界：
+        // - 两者都空 => 1.0
+        // - 任一为空 => 0.0
+        // ------------------------------------------------------------
+
+        const std::size_t asz = static_cast<std::size_t>(a.element_count());
+        const std::size_t bsz = b.hashes.size();
+
+        if (asz == 0 && bsz == 0) return 1.0;
+        if (asz == 0 || bsz == 0) return 0.0;
+
+        std::size_t inter = 0;
+        for (const hash_t hv : b.hashes)
+        {
+            if (a.contains(hv)) ++inter;
+        }
+
+        const std::size_t uni = std::min(asz, bsz);
+        if (uni == 0) return 1.0;
+        return static_cast<double>(inter) / static_cast<double>(uni);
     }
 
 } // namespace mash

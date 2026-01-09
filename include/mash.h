@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "hash.h"
+#include "bloom_filter.hpp"
 
 namespace mash
 {
@@ -52,6 +53,8 @@ namespace mash
                              bool noncanonical = true,
                              int seed = 0);
 
+    bloom_filter filterFromSketch(const Sketch& sk, double false_positive_rate = 0.0001, int seed = 0xA5A5A5A5);
+
 
     // ------------------------------------------------------------
     // Similarity & distance
@@ -60,6 +63,8 @@ namespace mash
     // - both empty => 1.0
     // - one empty  => 0.0
     double jaccard(const Sketch& a, const Sketch& b);
+
+    double jaccard(const bloom_filter& a, const Sketch& b);
 
     // d = - 1/k * ln( 2j/(1+j) )
     // - if j<=0 => +inf

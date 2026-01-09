@@ -87,6 +87,7 @@ add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/test_read_fasta.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_minimizer.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_mash.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_jaccard.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
@@ -131,3 +132,6 @@ add_test(NAME minimizer
 
 add_test(NAME mash
         COMMAND halign4_tests --test-suite=mash)
+
+add_test(NAME jaccard
+        COMMAND halign4_tests --test-suite=jaccard)
