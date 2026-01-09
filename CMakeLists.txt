@@ -25,8 +25,8 @@ add_executable(halign4
         src/utils/seq_io.cpp
         src/utils/cmd.cpp
         src/utils/file_io.cpp
-        src/utils/hash.cpp
-        src/utils/xxhash.c
+        src/mash/hash.cpp
+        src/mash/xxhash.c
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/cluster/cluster.cpp
