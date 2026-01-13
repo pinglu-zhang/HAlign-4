@@ -33,6 +33,7 @@ add_executable(halign4
         src/consensus/consensus.cpp
         src/align/ref_aligner.cpp
         src/align/ksw2_extz2_sse.c
+        src/align/cigar.cpp
         src/seed/minimizer.cpp
 
 )
