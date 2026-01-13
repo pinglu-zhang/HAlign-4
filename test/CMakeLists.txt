@@ -45,8 +45,11 @@ target_include_directories(halign4_test_support PUBLIC
         "${HALIGN4_ROOT}/extern/WFA2-lib"
 )
 
+# 说明：这里显式链接 WFA2 静态库，避免只暴露 include 目录却没有对应库，
+#       否则使用 WFA2 接口的测试在链接阶段可能报未定义符号。
 target_link_libraries(halign4_test_support PUBLIC
         OpenMP::OpenMP_CXX
+        wfa2::wfa2cpp_static
 )
 
 # 在 Release 时对测试支持库也启用与主项目一致的激进优化
@@ -95,9 +98,12 @@ set(OPENMP ON CACHE BOOL "Enable OpenMP for WFA2-lib" FORCE)
 set(WFA2LIB_BUILD_BENCHMARK OFF CACHE BOOL "Do not build WFA2-lib benchmark" FORCE)
 set(WFA2LIB_BUILD_TESTS OFF CACHE BOOL "Do not register WFA2-lib tests" FORCE)
 
-add_subdirectory(extern/WFA2-lib)
-
-target_link_libraries(halign4 PRIVATE OpenMP::OpenMP_CXX wfa2::wfa2cpp_static)
+# 注意：本 CMakeLists 位于 test/ 目录下，这里需要返回到工程根目录再进入 extern/WFA2-lib
+add_subdirectory(../extern/WFA2-lib)
+# 注意：这里不能直接链接到主工程 target `halign4`（在此 CMakeLists 中并未定义），
+# 否则在配置阶段会报错。我们将 OpenMP + WFA2 静态库链接到测试支撑库，
+# 让 halign4_tests 通过 halign4_test_support 间接获得这些依赖，保持测试逻辑不变。
+target_link_libraries(halign4_test_support PRIVATE OpenMP::OpenMP_CXX wfa2::wfa2cpp_static))
 
 
 add_executable(halign4_tests
