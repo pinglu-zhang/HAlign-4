@@ -280,6 +280,37 @@ namespace seq_io
         return std::make_unique<KseqReader>(file_path);
     }
 
+    // ------------------------------------------------------------------
+    // 函数：makeSamRecord
+    // 功能：从 SeqRecord 和比对信息构建 SAM 记录
+    //
+    // 参数：
+    //   - query: 查询序列的 SeqRecord
+    //   - ref_name: 参考序列名称
+    //   - cigar_str: CIGAR 字符串（例如 "100M5I95M"）
+    //   - pos: 1-based 比对起始位置（默认 1）
+    //   - mapq: mapping quality（默认 60）
+    //   - flag: SAM flag（默认 0）
+    //
+    // 返回：SeqWriter::SamRecord
+    //
+    // 说明：
+    //   1. 这是一个便捷函数，封装了从 SeqRecord 到 SamRecord 的转换逻辑
+    //   2. 质量值处理：若 query.qual 为空，则使用 SAM 默认值 "*"
+    //   3. 所有 string_view 字段的生命周期由调用者保证（query 和 cigar_str 必须在使用期间有效）
+    //   4. 简化的 SAM 记录，后续可扩展添加更多字段（AS、NM 等）
+    //
+    // 性能：O(1)，仅赋值操作，无内存分配
+    // ------------------------------------------------------------------
+    SeqWriter::SamRecord makeSamRecord(
+        const SeqRecord& query,
+        std::string_view ref_name,
+        std::string_view cigar_str,
+        std::uint32_t pos = 1,
+        std::uint8_t mapq = 60,
+        std::uint16_t flag = 0
+    );
+
 } // namespace seq_io
 
 namespace cmd

@@ -413,4 +413,53 @@ namespace seq_io
         out_.flush();
     }
 
+    // ------------------------------------------------------------------
+    // 函数：makeSamRecord
+    // 功能：从 SeqRecord 和比对信息构建 SAM 记录
+    //
+    // 实现说明：
+    // 1. 这是一个便捷函数，封装了从 SeqRecord 到 SamRecord 的转换逻辑
+    // 2. 质量值处理：若 query.qual 为空，则使用 SAM 默认值 "*"（已在 SamRecord 定义中初始化）
+    // 3. 所有 string_view 字段直接引用输入参数，生命周期由调用者保证
+    // 4. 性能：O(1)，仅赋值操作，无内存分配或拷贝
+    //
+    // 参数：
+    //   - query: 查询序列的 SeqRecord（必须在 SamRecord 使用期间保持有效）
+    //   - ref_name: 参考序列名称（必须在 SamRecord 使用期间保持有效）
+    //   - cigar_str: CIGAR 字符串（必须在 SamRecord 使用期间保持有效）
+    //   - pos: 1-based 比对起始位置（默认 1）
+    //   - mapq: mapping quality（默认 60）
+    //   - flag: SAM flag（默认 0）
+    //
+    // 返回：SeqWriter::SamRecord（所有 string_view 字段引用输入参数）
+    // ------------------------------------------------------------------
+    SeqWriter::SamRecord makeSamRecord(
+        const SeqRecord& query,
+        std::string_view ref_name,
+        std::string_view cigar_str,
+        std::uint32_t pos,
+        std::uint8_t mapq,
+        std::uint16_t flag)
+    {
+        // 构建 SAM 记录（所有字段均为 string_view，零拷贝）
+        SeqWriter::SamRecord sam_rec;
+        sam_rec.qname = query.id;      // query 名称（使用 SeqRecord 的 id 字段）
+        sam_rec.flag  = flag;          // SAM flag（0 表示未比对/正向链）
+        sam_rec.rname = ref_name;      // 参考序列名称
+        sam_rec.pos   = pos;           // 1-based 比对起始位置
+        sam_rec.mapq  = mapq;          // mapping quality
+        sam_rec.cigar = cigar_str;     // CIGAR 字符串
+        sam_rec.seq   = query.seq;     // query 序列
+
+        // 质量值处理：若 query.qual 不为空，则使用；否则保持默认值 "*"
+        if (!query.qual.empty()) {
+            sam_rec.qual = query.qual;
+        }
+        // 否则使用默认值 "*"（已在 SamRecord 定义中初始化）
+
+        return sam_rec;
+    }
+
 } // namespace seq_io
+
+

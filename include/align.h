@@ -7,12 +7,7 @@
 #include <string>
 #include <vector>
 #include <functional>
-#include "ksw2.h"
-#include "bindings/cpp/WFAligner.hpp"
-extern "C" {
-#include "alignment/cigar.h"
-#include "wavefront/wavefront_align.h"
-}
+#include "config.hpp"  // 包含 Options 结构体的完整定义
 
 namespace cigar
 {
@@ -41,6 +36,30 @@ namespace cigar
     // 示例：0x50 -> ('M', 5)
     // ------------------------------------------------------------------
     void intToCigar(CigarUnit cigar, char& operation, uint32_t& len);
+
+    // ------------------------------------------------------------------
+    // 函数：hasInsertion
+    // 功能：检测 CIGAR 序列中是否存在插入操作（'I'）
+    // 参数：cigar - CIGAR 操作序列（压缩形式）
+    // 返回：true 表示存在至少一个插入操作，false 表示不存在
+    // 性能：O(N)，N 为 CIGAR 操作数量；短路优化，找到第一个 'I' 即返回
+    // ------------------------------------------------------------------
+    bool hasInsertion(const Cigar_t& cigar);
+
+    // ------------------------------------------------------------------
+    // 函数：cigarToString
+    // 功能：将 CIGAR 从压缩格式转换为 SAM 标准字符串格式
+    // 参数：cigar - CIGAR 操作序列（压缩形式）
+    // 返回：SAM 格式的 CIGAR 字符串，例如 "100M5I95M"
+    // 性能优化：
+    //   1. 预分配字符串空间（cigar.size() * 5），减少内存重新分配
+    //   2. 复杂度 O(N)，N 为 CIGAR 操作数量
+    //   3. 使用 std::to_string 进行整数到字符串转换（编译器优化）
+    // 示例：
+    //   输入：[cigarToInt('M', 100), cigarToInt('I', 5), cigarToInt('M', 95)]
+    //   输出："100M5I95M"
+    // ------------------------------------------------------------------
+    std::string cigarToString(const Cigar_t& cigar);
 }
 
 namespace align {
@@ -135,9 +154,33 @@ namespace align {
     class RefAligner
     {
         public:
-        // 初始化函数
+        // ------------------------------------------------------------------
+        // 构造函数1：直接传入参数初始化
+        // ------------------------------------------------------------------
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size = 21, int window_size = 10,
                     int sketch_size = 2000, bool noncanonical = true);
+
+        // ------------------------------------------------------------------
+        // 构造函数2：基于 Options 结构体初始化
+        // 功能：从全局配置（Options）中提取相关参数来初始化 RefAligner
+        //
+        // 参数：
+        //   - opt: Options 结构体（包含所有命令行参数和配置）
+        //   - ref_fasta_path: 参考序列文件路径（必须显式指定，因为 Options 中没有专门的 ref 字段）
+        //
+        // 说明：
+        //   1. work_dir 取自 opt.workdir
+        //   2. kmer_size 取自 opt.kmer_size
+        //   3. window_size 取自 opt.kmer_window
+        //   4. sketch_size 取自 opt.sketch_size
+        //   5. noncanonical 默认为 true（后续可扩展到 Options 中）
+        //
+        // 优势：
+        //   - 减少参数传递的冗余代码
+        //   - 配置集中化，便于维护和扩展
+        //   - 与命令行解析逻辑解耦（Options 可从命令行、配置文件或测试构造）
+        // ------------------------------------------------------------------
+        RefAligner(const Options& opt, const FilePath& ref_fasta_path);
 
         // 说明：
         // - threads <= 0 表示使用 OpenMP 运行时默认线程数（例如由 OMP_NUM_THREADS 控制）
@@ -148,7 +191,7 @@ namespace align {
         private:
         // 把“相似度计算 +（占位）比对 + 写出”抽象成成员函数，便于后续替换实现而不影响并行框架。
         // 约束：该函数不应修改共享 reference 数据结构（除非自行加锁）。
-        void alignOneQueryToRef(const seq_io::SeqRecord& q, seq_io::SeqWriter& out) const;
+        void alignOneQueryToRef(const seq_io::SeqRecord& q, int tid) const;
 
         FilePath work_dir;
         seq_io::SeqRecords ref_sequences;
@@ -163,6 +206,9 @@ namespace align {
         bool keep_first_length = false;
         bool keep_all_length = false;
         bool noncanonical = true;
+
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs;
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs_with_insertion;
 
 
     };

@@ -167,6 +167,11 @@ int main(int argc, char** argv) {
         spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
 
 
+        // 调用RefAligner进行后续的对齐和合并工作
+
+
+
+
         // 后续流程（概要）：
         // - 使用 minimizer / k-mer 方法估算序列间相似度并分组；
         // - 对于每个分组使用多序列比对并生成局部共识；

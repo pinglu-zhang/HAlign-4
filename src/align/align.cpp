@@ -1,4 +1,10 @@
 #include "align.h"
+#include "ksw2.h"
+#include "bindings/cpp/WFAligner.hpp"
+extern "C" {
+#include "alignment/cigar.h"
+#include "wavefront/wavefront_align.h"
+}
 namespace align
 {
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query)

@@ -106,5 +106,75 @@ void intToCigar(const CigarUnit cigar_unit, char& operation, std::uint32_t& len)
     assert(operation != '?');
 }
 
+// ------------------------------------------------------------------
+// 函数：hasInsertion
+// 功能：检测 CIGAR 序列中是否存在插入操作（'I'）
+//
+// 实现说明：
+// 1. 性能优化：直接对 CigarUnit 的低 4 位进行位运算检查，避免完整解码
+// 2. 短路优化：找到第一个 'I' 操作即返回 true，无需遍历整个序列
+// 3. 复杂度：O(N)，最坏情况遍历所有操作；最好情况 O(1)（第一个就是 'I'）
+// 4. 正确性：依赖 kOpI = 1 的编码约定（SAM/BAM 规范固定值）
+//
+// 参数：cigar - CIGAR 操作序列（压缩形式，每个元素为 CigarUnit）
+// 返回：true 表示存在至少一个插入操作，false 表示不存在
+// ------------------------------------------------------------------
+bool hasInsertion(const Cigar_t& cigar)
+{
+    // 遍历所有 CIGAR 操作，检查低 4 位是否为 kOpI（插入操作码 = 1）
+    for (const auto cigar_unit : cigar) {
+        // 提取低 4 位的操作码
+        const std::uint32_t op_code = static_cast<std::uint32_t>(cigar_unit) & kOpMask;
+
+        // 如果是插入操作，立即返回 true（短路优化）
+        if (op_code == kOpI) {
+            return true;
+        }
+    }
+
+    // 遍历完所有操作都没有找到插入，返回 false
+    return false;
+}
+
+// ------------------------------------------------------------------
+// 函数：cigarToString
+// 功能：将 CIGAR 从压缩格式转换为 SAM 标准字符串格式
+//
+// 实现说明：
+// 1. 性能优化：预分配字符串空间（cigar.size() * 5），避免多次内存重新分配
+//    - 估算：平均每个 CIGAR 操作占用约 3-5 字符（如 "100M" = 4 字符）
+//    - 对于大多数情况，reserve(cigar.size() * 5) 足够，避免了 string 的自动扩容
+// 2. 使用 std::to_string 转换整数，编译器会优化为高效实现
+// 3. 复杂度：O(N)，N 为 CIGAR 操作数量
+// 4. 字符串拼接：使用 += 操作符，在预分配空间足够时为 O(1) 追加
+//
+// 参数：cigar - CIGAR 操作序列（压缩形式）
+// 返回：SAM 格式的 CIGAR 字符串，例如 "100M5I95M"
+//
+// 示例：
+//   输入：[cigarToInt('M', 100), cigarToInt('I', 5), cigarToInt('M', 95)]
+//   输出："100M5I95M"
+// ------------------------------------------------------------------
+std::string cigarToString(const Cigar_t& cigar)
+{
+    // 预分配字符串空间，减少内存重新分配次数
+    // 估算：每个 CIGAR 操作平均占用约 5 个字符（例如 "1000M" = 5 字符）
+    std::string result;
+    result.reserve(cigar.size() * 5);
+
+    // 遍历所有 CIGAR 操作，逐个解码并拼接到结果字符串
+    for (const auto cigar_unit : cigar) {
+        char op;
+        std::uint32_t len;
+        intToCigar(cigar_unit, op, len);
+
+        // 格式：<长度><操作符>，例如 "100M"
+        result += std::to_string(len);
+        result += op;
+    }
+
+    return result;
+}
+
 } // namespace cigar
 
