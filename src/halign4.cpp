@@ -5,6 +5,8 @@
 #include "consensus.h"
 #include <chrono>
 
+#include "align.h"
+
 // 该文件是程序的入口（main），负责：
 // 1) 解析命令行参数（使用 CLI11），并把值绑定到 Options 结构；
 // 2) 校验参数（例如文件存在性、工作目录准备、外部 MSA 命令模板测试）；
@@ -120,13 +122,24 @@ int main(int argc, char** argv) {
         FilePath consensus_aligned_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
         FilePath consensus_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_FASTA;
         FilePath consensus_json_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_JSON;
+
         if (!opt.center_path.empty())
         {
-            // 如果用户直接指定了中心序列路径，则用该路径替换自动生成的共识输入，不再从预处理选择
-            consensus_unaligned_file = opt.center_path;
-            file_io::removeAll(consensus_unaligned_file);
-            spdlog::info("Using user-specified center sequence for alignment: {}", consensus_unaligned_file.string());
+            // 如果用户直接指定了中心序列路径，则将其拷贝到工作目录中
+            // 说明：
+            // 1. 保持用户原始文件不变（不删除 opt.center_path）
+            // 2. 删除工作目录中可能存在的旧文件（consensus_unaligned_file）
+            // 3. 将用户指定的文件拷贝到工作目录，以便后续流程统一处理
+            spdlog::info("Using user-specified center sequence: {}", opt.center_path);
+
+            // 删除工作目录中的旧文件（如果存在）
+            if (std::filesystem::exists(consensus_unaligned_file)) {
+                file_io::removeAll(consensus_unaligned_file);
+            }
+
+            // 从用户指定的路径拷贝到工作目录
             file_io::copyFile(FilePath(opt.center_path), consensus_unaligned_file);
+            spdlog::info("Center sequence copied to: {}", consensus_unaligned_file.string());
         }
 
         // 调用外部 MSA（可能是 mafft/clustalo/其他高质量工具），会阻塞直到命令完成
@@ -166,7 +179,8 @@ int main(int argc, char** argv) {
         double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
         spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
 
-
+        align::RefAligner ref_aligner(opt, opt.center_path.empty() ? consensus_file.string() : consensus_unaligned_file.string());
+        ref_aligner.alignQueryToRef(opt.input, opt.threads);
         // 调用RefAligner进行后续的对齐和合并工作
 
 

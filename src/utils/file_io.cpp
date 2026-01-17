@@ -108,23 +108,66 @@ namespace file_io {
         return std::regex_search(s, scheme_re);
     }
 
-    // 复制文件；优先使用 std::filesystem::copy_file，遇到跨设备错误时回退到流拷贝
+    // ------------------------------------------------------------------
+    // 函数：copyFile
+    // 功能：复制文件，支持跨文件系统拷贝
+    //
+    // 实现说明：
+    // 1. 优先使用 std::filesystem::copy_file（高效，支持元数据保留）
+    // 2. 遇到跨设备错误时回退到流拷贝（兼容性更好）
+    // 3. 特殊处理：源和目标相同时直接返回（无需拷贝）
+    //
+    // 参数：
+    //   - src: 源文件路径（必须是常规文件）
+    //   - dst: 目标文件路径（会覆盖已存在的文件）
+    //
+    // 异常：
+    //   - 源文件不存在或不是常规文件时抛出异常
+    //   - 拷贝失败时抛出异常（带详细错误信息）
+    // ------------------------------------------------------------------
     void copyFile(const FilePath& src, const FilePath& dst) {
         requireRegularFile(src, "source file");
         ensureParentDirExists(dst);
 
+        // 边缘情况：源和目标是同一个文件，无需拷贝
+        // 说明：使用 std::filesystem::equivalent 检查两个路径是否指向同一个文件
+        //       这比字符串比较更可靠，能处理符号链接、相对路径等情况
+        std::error_code equiv_ec;
+        if (fs::equivalent(src, dst, equiv_ec)) {
+            // 如果两个路径指向同一个文件，直接返回（无需拷贝）
+            return;
+        }
+        // 注意：如果 equivalent 失败（例如目标文件不存在），equiv_ec 会被设置，
+        //       但我们忽略它，因为 copy_file 会处理这种情况
+
+        // 尝试使用 std::filesystem::copy_file（高效）
         std::error_code ec;
         if (fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec)) {
+            // 拷贝成功
             return;
         }
 
+        // copy_file 返回 false，需要检查原因
         if (!ec) {
+            // 没有错误码但返回 false，这是一个异常情况
+            // 可能的原因：
+            // 1. 源和目标相同（但 equivalent 检查应该已经处理）
+            // 2. 文件已存在且内容相同（某些实现可能返回 false）
+            // 3. 其他未知原因
+            //
+            // 此时我们检查目标文件是否存在且可读，如果是则认为拷贝成功
             std::error_code exists_ec;
-            if (fs::exists(dst, exists_ec) && !exists_ec) return;
+            if (fs::exists(dst, exists_ec) && !exists_ec && fs::is_regular_file(dst, exists_ec) && !exists_ec) {
+                // 目标文件存在且是常规文件，认为拷贝成功（可能是已存在且相同）
+                return;
+            }
+            // 否则抛出异常（未知原因）
             throw std::runtime_error(formatFsError("failed to copy file (unknown reason)", dst, exists_ec));
         }
 
+        // 有错误码：检查是否是跨设备错误，如果是则回退到流拷贝
         if (ec == std::make_error_code(std::errc::cross_device_link)) {
+            // 跨文件系统拷贝：使用流拷贝
             std::ifstream in(src, std::ios::binary);
             if (!in) {
                 throw std::runtime_error(formatFsError("failed to open source for reading", src, std::make_error_code(std::errc::io_error)));
@@ -140,6 +183,7 @@ namespace file_io {
             return;
         }
 
+        // 其他错误：抛出异常
         throw std::runtime_error(formatFsError("failed to copy file", dst, ec));
     }
 

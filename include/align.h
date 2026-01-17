@@ -185,7 +185,7 @@ namespace align {
         // 说明：
         // - threads <= 0 表示使用 OpenMP 运行时默认线程数（例如由 OMP_NUM_THREADS 控制）
         // - batch_size 用于控制“流式读取”的批次大小，越大吞吐越高但占用内存更多
-        void alignQueryToRef(const FilePath& qry_fasta_path, int threads = 0, std::size_t batch_size = 256);
+        void alignQueryToRef(const FilePath& qry_fasta_path, int threads = 0, std::size_t batch_size = 5120);
 
 
         private:

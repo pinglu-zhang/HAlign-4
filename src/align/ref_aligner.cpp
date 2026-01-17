@@ -21,9 +21,26 @@ namespace align {
         seq_io::SeqRecord rec;
         while (reader.next(rec))
         {
+            // 关键修复：必须在 move(rec) 之前计算 sketch 和 minimizer
+            // 说明：
+            // 1. std::move(rec) 会将 rec.seq 的内容转移走，之后 rec.seq 变为空字符串
+            // 2. 因此必须先使用 rec.seq 计算 sketch 和 minimizer
+            // 3. 然后再将 rec 移动到 ref_sequences
+            //
+            // 错误的顺序（会导致 sketch 为空）：
+            //   ref_sequences.push_back(std::move(rec));  // rec.seq 被移走
+            //   ref_sketch.push_back(sketchFromSequence(rec.seq, ...));  // ❌ rec.seq 已经是空的！
+            //
+            // 正确的顺序（本次修复）：
+            //   先计算 sketch（使用 rec.seq）
+            //   再移动 rec（rec.seq 被转移）
+
+            auto sketch = mash::sketchFromSequence(rec.seq, kmer_size, sketch_size, noncanonical, random_seed);
+            auto minimizer = minimizer::extractMinimizerHash(rec.seq, kmer_size, window_size, noncanonical);
+
             ref_sequences.push_back(std::move(rec));
-            ref_sketch.push_back(mash::sketchFromSequence(rec.seq, kmer_size, sketch_size, noncanonical, random_seed));
-            ref_minimizers.push_back(minimizer::extractMinimizerHash(rec.seq, kmer_size, window_size, noncanonical));
+            ref_sketch.push_back(std::move(sketch));
+            ref_minimizers.push_back(std::move(minimizer));
         }
     }
 
@@ -71,13 +88,19 @@ namespace align {
         // 2) 选择最相似 reference（线性扫描）
         double best_j = -1.0;
         std::size_t best_r = 0;
+
         for (std::size_t r = 0; r < ref_sketch.size(); ++r) {
             const double j = mash::jaccard(qsk, ref_sketch[r]);
+
+
+
             if (j > best_j) {
                 best_j = j;
                 best_r = r;
             }
         }
+
+
 
         const auto& best_ref = ref_sequences[best_r];
 
@@ -154,6 +177,8 @@ namespace align {
         outs.clear();
         outs_with_insertion.clear();
         outs.resize(static_cast<std::size_t>(nthreads));
+        outs_with_insertion.resize(static_cast<std::size_t>(nthreads));  // 关键修复：必须 resize 以避免越界访问
+
         for (int tid = 0; tid < nthreads; ++tid) {
             FilePath out_path = result_dir / ("thread" + std::to_string(tid) + ".sam");
             FilePath out_path_insertion = result_dir / ("thread" + std::to_string(tid) + "_insertion.sam");
