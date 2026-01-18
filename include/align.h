@@ -181,11 +181,24 @@ namespace align {
         // - batch_size 用于控制“流式读取”的批次大小，越大吞吐越高但占用内存更多
         void alignQueryToRef(const FilePath& qry_fasta_path, int threads = 0, std::size_t batch_size = 5120);
 
+        void mergeAlignedResults(const FilePath& aligned_consensus_path);
+
 
         private:
-        // 把"相似度计算 +（占位）比对 + 写出"抽象成成员函数，便于后续替换实现而不影响并行框架。
-        // 约束：该函数不应修改共享 reference 数据结构（除非自行加锁）。
-        void alignOneQueryToRef(const seq_io::SeqRecord& q, int tid) const;
+        // ------------------------------------------------------------------
+        // 函数：alignOneQueryToRef
+        // 功能：对单个 query 执行比对并写入 SAM 文件
+        // 参数：
+        //   - q: 待比对的查询序列
+        //   - out: 普通输出文件的 writer（无插入或二次比对后无插入的序列）
+        //   - out_insertion: 插入序列输出文件的 writer（二次比对后仍有插入的序列）
+        // 说明：
+        //   - 该函数不修改共享 reference 数据结构（线程安全）
+        //   - out 和 out_insertion 由调用者管理生命周期（每线程独立）
+        // ------------------------------------------------------------------
+        void alignOneQueryToRef(const seq_io::SeqRecord& q,
+                               seq_io::SeqWriter& out,
+                               seq_io::SeqWriter& out_insertion) const;
 
         // 辅助函数：根据 keep_first_length 标志选择参考序列名称
         std::string_view getRefNameForRecheck() const;
@@ -213,8 +226,9 @@ namespace align {
         bool keep_all_length = false;
         bool noncanonical = true;
 
-        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs;
-        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs_with_insertion;
+        std::vector<FilePath> outs_path;
+        std::vector<FilePath> outs_with_insertion_path;
+
 
 
     };

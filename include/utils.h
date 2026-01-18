@@ -281,6 +281,102 @@ namespace seq_io
     }
 
     // ------------------------------------------------------------------
+    // 类：SamReader
+    // 功能：读取 SAM 文件并解析为 SeqRecord
+    //
+    // 说明：
+    // 1. SAM 格式为制表符分隔的文本文件，每行包含一条比对记录
+    // 2. SAM 文件可包含以 '@' 开头的 header 行，本类会自动跳过
+    // 3. 读取时提取 QNAME（query name）、SEQ（序列）、QUAL（质量值）字段
+    // 4. 支持大文件高效读取（使用大缓冲区优化）
+    //
+    // 性能说明：
+    // - 使用 std::getline 逐行读取，配合大缓冲区减少系统调用
+    // - 使用 string_view 进行字段分割，避免不必要的字符串拷贝
+    // - 默认缓冲区大小 8MiB，适合大规模 SAM 文件
+    // ------------------------------------------------------------------
+    class SamReader : public ISequenceReader
+    {
+    public:
+        // 构造函数：打开 SAM 文件并初始化读取器
+        // 参数：
+        //   - file_path: SAM 文件路径
+        //   - buffer_size: 输入缓冲区大小（默认 8MiB）
+        explicit SamReader(const FilePath& file_path, std::size_t buffer_size = 8ULL * 1024ULL * 1024ULL);
+
+        ~SamReader() override;
+
+        // 禁止拷贝，允许移动
+        SamReader(const SamReader&) = delete;
+        SamReader& operator=(const SamReader&) = delete;
+        SamReader(SamReader&&) noexcept;
+        SamReader& operator=(SamReader&&) noexcept;
+
+        // 读取下一条 SAM 记录并解析为 SeqRecord
+        // 返回：
+        //   - true: 成功读取一条记录，rec 被填充
+        //   - false: 到达文件末尾，rec 保持不变
+        // 异常：解析错误时抛出 std::runtime_error
+        bool next(SeqRecord& rec) override;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
+    // ------------------------------------------------------------------
+    // 函数：convertSamToFasta
+    // 功能：读取 SAM 文件并转换为 FASTA 文件
+    //
+    // 说明：
+    // 1. 从 SAM 文件中提取 QNAME 和 SEQ 字段，写入 FASTA 格式
+    // 2. 自动跳过 SAM header 行（以 '@' 开头）
+    // 3. 保留 query 序列的名称和序列内容，丢弃比对信息和质量值
+    // 4. 支持大文件高效转换（使用缓冲区优化）
+    //
+    // 参数：
+    //   - sam_path: 输入 SAM 文件路径
+    //   - fasta_path: 输出 FASTA 文件路径
+    //   - line_width: FASTA 每行宽度（默认 80，0 表示不换行）
+    //
+    // 性能：
+    // - 使用 8MiB 输入/输出缓冲区，减少 I/O 系统调用
+    // - 流式处理，内存占用与文件大小无关
+    //
+    // 异常：文件打开失败或解析错误时抛出 std::runtime_error
+    // ------------------------------------------------------------------
+    void convertSamToFasta(const FilePath& sam_path, const FilePath& fasta_path, std::size_t line_width = 80);
+
+    // ------------------------------------------------------------------
+    // 函数：mergeSamToFasta
+    // 功能：读取多个 SAM 文件并合并转换为单个 FASTA 文件
+    //
+    // 说明：
+    // 1. 按顺序读取 sam_paths 中的每个 SAM 文件
+    // 2. 提取所有 QNAME 和 SEQ 字段，追加写入到同一个 FASTA 文件
+    // 3. 自动跳过所有 SAM header 行（以 '@' 开头）
+    // 4. 支持大规模文件高效合并（使用缓冲区优化）
+    // 5. 如果 sam_paths 为空，则创建空的 FASTA 文件
+    //
+    // 参数：
+    //   - sam_paths: 输入 SAM 文件路径列表（按顺序处理）
+    //   - fasta_path: 输出 FASTA 文件路径
+    //   - line_width: FASTA 每行宽度（默认 80，0 表示不换行）
+    //
+    // 性能：
+    // - 使用 8MiB 输入/输出缓冲区，减少 I/O 系统调用
+    // - 流式处理，逐文件读取并追加写入，内存占用与文件数量和大小无关
+    // - 复杂度：O(N)，N 为所有 SAM 文件的总记录数
+    //
+    // 异常：文件打开失败或解析错误时抛出 std::runtime_error
+    //
+    // 示例：
+    //   std::vector<FilePath> sam_files = {"thread0.sam", "thread1.sam", "thread2.sam"};
+    //   mergeSamToFasta(sam_files, "merged.fasta", 80);
+    // ------------------------------------------------------------------
+    void mergeSamToFasta(const std::vector<FilePath>& sam_paths, const FilePath& fasta_path, std::size_t line_width = 80);
+
+    // ------------------------------------------------------------------
     // 函数：makeSamRecord
     // 功能：从 SeqRecord 和比对信息构建 SAM 记录
     //

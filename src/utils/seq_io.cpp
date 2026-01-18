@@ -12,6 +12,10 @@
 #include <cstdio>
 #include <cstdlib> // for malloc/free
 
+#ifdef _DEBUG
+#include <spdlog/spdlog.h>
+#endif
+
 #if __has_include(<zlib.h>)
     #include <zlib.h>
     #define HALIGN4_HAVE_ZLIB 1
@@ -458,6 +462,255 @@ namespace seq_io
         // 否则使用默认值 "*"（已在 SamRecord 定义中初始化）
 
         return sam_rec;
+    }
+
+    // ------------------------------------------------------------------
+    // SamReader 实现
+    // ------------------------------------------------------------------
+
+    // SamReader::Impl 结构体：封装底层文件流和缓冲区
+    //
+    // 设计说明：
+    // 1. 使用 std::ifstream 读取 SAM 文件（文本模式）
+    // 2. 使用 std::getline 逐行读取，配合大缓冲区减少系统调用
+    // 3. line_buffer 用于暂存当前行内容，避免重复分配
+    // 4. io_buf 用于提升 std::ifstream 的缓冲区大小
+    struct SamReader::Impl
+    {
+        std::ifstream in_;             // 输入文件流
+        FilePath file_path_;           // 文件路径（用于错误信息）
+        std::string line_buffer_;      // 当前行缓冲区（避免重复分配）
+        char* io_buf_{nullptr};        // 输入缓冲区（用于 setvbuf 优化）
+        std::size_t io_buf_size_{0};   // 缓冲区大小
+    };
+
+    SamReader::SamReader(const FilePath& file_path, std::size_t buffer_size)
+        : impl_(std::make_unique<Impl>())
+    {
+        impl_->file_path_ = file_path;
+        impl_->io_buf_size_ = buffer_size;
+
+        // 打开文件（文本模式，自动处理行结束符）
+        impl_->in_.open(file_path, std::ios::in);
+        if (!impl_->in_) {
+            throw makeIoError("failed to open SAM file", file_path);
+        }
+
+        // 提升输入缓冲区大小以减少系统调用
+        // 说明：
+        // - 对于 std::ifstream，可以通过 rdbuf()->pubsetbuf() 设置缓冲区
+        // - 必须在首次读取前调用
+        // - 如果失败，仍然可以正常工作，只是性能可能下降
+        if (buffer_size > 0) {
+            impl_->io_buf_ = static_cast<char*>(std::malloc(buffer_size));
+            if (impl_->io_buf_) {
+                impl_->in_.rdbuf()->pubsetbuf(impl_->io_buf_, static_cast<std::streamsize>(buffer_size));
+            }
+        }
+
+        // 预分配行缓冲区（SAM 行通常较长，预分配可减少 realloc）
+        impl_->line_buffer_.reserve(4096);
+    }
+
+    SamReader::~SamReader()
+    {
+        if (!impl_) return;
+
+        // 释放缓冲区（在关闭文件之后）
+        if (impl_->in_.is_open()) {
+            impl_->in_.close();
+        }
+
+        if (impl_->io_buf_) {
+            std::free(impl_->io_buf_);
+            impl_->io_buf_ = nullptr;
+        }
+    }
+
+    SamReader::SamReader(SamReader&& other) noexcept = default;
+    SamReader& SamReader::operator=(SamReader&& other) noexcept = default;
+
+    bool SamReader::next(SeqRecord& rec)
+    {
+        if (!impl_ || !impl_->in_) {
+            throw std::runtime_error("SamReader is not initialized");
+        }
+
+        // 逐行读取，跳过 header 行（以 '@' 开头）
+        while (std::getline(impl_->in_, impl_->line_buffer_)) {
+            const std::string_view line(impl_->line_buffer_);
+
+            // 跳过空行和 header 行
+            if (line.empty() || line[0] == '@') {
+                continue;
+            }
+
+            // SAM 格式：
+            // QNAME\tFLAG\tRNAME\tPOS\tMAPQ\tCIGAR\tRNEXT\tPNEXT\tTLEN\tSEQ\tQUAL\t[OPT...]
+            // 我们只需要提取：
+            // - 字段 0: QNAME (query name)
+            // - 字段 9: SEQ (序列)
+            // - 字段 10: QUAL (质量值，可选)
+
+            // 使用 string_view 进行字段分割（零拷贝）
+            std::size_t field_idx = 0;
+            std::size_t start = 0;
+            std::string_view qname, seq, qual;
+
+            for (std::size_t i = 0; i <= line.size(); ++i) {
+                // 到达制表符或行尾
+                if (i == line.size() || line[i] == '\t') {
+                    const std::string_view field = line.substr(start, i - start);
+
+                    // 提取关键字段
+                    if (field_idx == 0) {
+                        qname = field;
+                    } else if (field_idx == 9) {
+                        seq = field;
+                    } else if (field_idx == 10) {
+                        qual = field;
+                        break; // 已获取所有需要的字段
+                    }
+
+                    start = i + 1;
+                    ++field_idx;
+                }
+            }
+
+            // 检查是否成功提取了必需字段
+            if (qname.empty() || seq.empty()) {
+                throw std::runtime_error("invalid SAM record (missing QNAME or SEQ): " + impl_->file_path_.string());
+            }
+
+            // 填充 SeqRecord
+            // 说明：
+            // - id: QNAME（query 名称）
+            // - desc: 保持为空（SAM 格式不包含描述信息）
+            // - seq: SEQ 字段（序列内容）
+            // - qual: QUAL 字段（质量值，如果为 '*' 则清空）
+            rec.id.assign(qname.data(), qname.size());
+            rec.desc.clear();
+            rec.seq.assign(seq.data(), seq.size());
+
+            // 质量值处理：'*' 表示无质量值
+            if (qual.empty() || (qual.size() == 1 && qual[0] == '*')) {
+                rec.qual.clear();
+            } else {
+                rec.qual.assign(qual.data(), qual.size());
+            }
+
+            return true;
+        }
+
+        // 到达文件末尾
+        return false;
+    }
+
+    // ------------------------------------------------------------------
+    // 函数：convertSamToFasta
+    // 实现说明：
+    // 1. 使用 SamReader 逐条读取 SAM 记录
+    // 2. 使用 SeqWriter 逐条写入 FASTA 格式
+    // 3. 流式处理，内存占用与文件大小无关
+    // ------------------------------------------------------------------
+    void convertSamToFasta(const FilePath& sam_path, const FilePath& fasta_path, std::size_t line_width)
+    {
+        // 打开输入和输出文件
+        // 说明：
+        // - SamReader 和 SeqWriter 都使用大缓冲区（8MiB）以优化 I/O 性能
+        // - line_width 传递给 SeqWriter，控制 FASTA 输出的每行宽度
+        SamReader reader(sam_path);
+        SeqWriter writer(fasta_path, line_width);
+
+        // 逐条读取并转换
+        SeqRecord rec;
+        std::size_t count = 0;
+
+        while (reader.next(rec)) {
+            // 写入 FASTA 格式（只保留 id 和 seq，丢弃 qual）
+            writer.writeFasta(rec);
+            ++count;
+        }
+
+        // 确保所有数据已刷新到磁盘
+        writer.flush();
+
+        // 记录转换统计信息（调试模式下输出）
+        #ifdef _DEBUG
+        spdlog::debug("convertSamToFasta: converted {} records from {} to {}", count, sam_path.string(), fasta_path.string());
+        #endif
+    }
+
+    // ------------------------------------------------------------------
+    // 函数：mergeSamToFasta
+    // 功能：读取多个 SAM 文件并合并转换为单个 FASTA 文件
+    //
+    // 实现说明：
+    // 1. 先创建一个 SeqWriter（FASTA 模式）打开输出文件
+    // 2. 逐个遍历输入的 SAM 文件路径
+    // 3. 对每个 SAM 文件：
+    //    a. 使用 SamReader 打开并逐条读取
+    //    b. 将每条记录追加写入到同一个 FASTA 文件
+    // 4. 所有文件处理完毕后，flush 确保数据落盘
+    //
+    // 性能优化：
+    // - 输出文件只打开一次，所有记录追加写入（避免多次打开/关闭）
+    // - 使用大缓冲区（8MiB）批量写入，减少系统调用
+    // - 每个 SamReader 独立打开和关闭，内存占用仅与单个文件的行长度相关
+    //
+    // 错误处理：
+    // - 如果某个 SAM 文件打开失败或解析错误，会抛出异常并中止合并
+    // - 已写入的数据会保留在输出文件中（部分完成状态）
+    // ------------------------------------------------------------------
+    void mergeSamToFasta(const std::vector<FilePath>& sam_paths, const FilePath& fasta_path, std::size_t line_width)
+    {
+        // 打开输出文件（FASTA 模式，使用大缓冲区优化）
+        // 说明：
+        // - 输出文件只创建一次，所有输入文件的记录都追加到这个文件
+        // - 使用 8MiB 缓冲区，批量写入以减少系统调用
+        SeqWriter writer(fasta_path, line_width);
+
+        // 统计信息（调试用）
+        std::size_t total_count = 0;
+        std::size_t file_idx = 0;
+
+        // 逐个处理每个 SAM 文件
+        for (const auto& sam_path : sam_paths) {
+            // 打开当前 SAM 文件
+            // 说明：
+            // - 每个 SamReader 独立打开和关闭
+            // - 使用 RAII 确保文件在处理完毕后自动关闭
+            // - 如果文件打开失败，会抛出异常并中止合并
+            SamReader reader(sam_path);
+
+            // 逐条读取并追加写入
+            SeqRecord rec;
+            std::size_t file_count = 0;
+
+            while (reader.next(rec)) {
+                // 写入 FASTA 格式（只保留 id 和 seq，丢弃 qual）
+                writer.writeFasta(rec);
+                ++file_count;
+                ++total_count;
+            }
+
+            // 调试信息：记录每个文件的处理进度
+            #ifdef _DEBUG
+            spdlog::debug("mergeSamToFasta: processed file {} ({}/{}): {} records from {}",
+                         file_idx + 1, file_idx + 1, sam_paths.size(), file_count, sam_path.string());
+            #endif
+
+            ++file_idx;
+        }
+
+        // 确保所有数据已刷新到磁盘
+        writer.flush();
+
+        // 记录合并统计信息（调试模式下输出）
+        #ifdef _DEBUG
+        spdlog::debug("mergeSamToFasta: merged {} SAM files ({} total records) to {}",
+                     sam_paths.size(), total_count, fasta_path.string());
+        #endif
     }
 
 } // namespace seq_io

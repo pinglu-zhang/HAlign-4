@@ -128,11 +128,16 @@ namespace align {
     // 2. 找到最相似的 reference
     // 3. 执行全局比对
     // 4. 根据是否有插入进行二次判断并写入相应文件
+    //
+    // 参数说明：
+    //   - q: 待比对的查询序列
+    //   - out: 普通输出文件的 writer（无插入或二次比对后无插入的序列）
+    //   - out_insertion: 插入序列输出文件的 writer（二次比对后仍有插入的序列）
     // ------------------------------------------------------------------
-    void RefAligner::alignOneQueryToRef(const seq_io::SeqRecord& q, int tid) const
+    void RefAligner::alignOneQueryToRef(const seq_io::SeqRecord& q,
+                                       seq_io::SeqWriter& out,
+                                       seq_io::SeqWriter& out_insertion) const
     {
-        auto& out = *outs[tid];
-        auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
 
         // 1) 计算 query sketch
         const mash::Sketch qsk = mash::sketchFromSequence(
@@ -216,6 +221,15 @@ namespace align {
 
         // 每线程一个输出
         // writer（SAM 模式，占位输出也能保持格式合法）
+        outs_path.clear();
+        outs_path.resize(static_cast<std::size_t>(nthreads));
+        outs_with_insertion_path.clear();
+        outs_with_insertion_path.resize(static_cast<std::size_t>(nthreads));
+
+
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs;
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs_with_insertion;
+
         outs.clear();
         outs_with_insertion.clear();
         outs.resize(static_cast<std::size_t>(nthreads));
@@ -224,6 +238,10 @@ namespace align {
         for (int tid = 0; tid < nthreads; ++tid) {
             FilePath out_path = result_dir / ("thread" + std::to_string(tid) + ".sam");
             FilePath out_path_insertion = result_dir / ("thread" + std::to_string(tid) + "_insertion.sam");
+
+            outs_path[static_cast<std::size_t>(tid)] = out_path;
+            outs_with_insertion_path[static_cast<std::size_t>(tid)] = out_path_insertion;
+
 
             auto tmp = seq_io::SeqWriter::Sam(out_path);
             auto tmp_insertion = seq_io::SeqWriter::Sam(out_path_insertion);
@@ -253,17 +271,19 @@ namespace align {
 
             // OpenMP 规约：
             // - default(none) 强制显式标注共享/私有变量，避免无意的数据竞争；
-            // - outs 与 chunk 是跨线程共享只读/线程索引访问的；tid/out/i 为线程私有。
-            #pragma omp parallel default(none) shared(outs, chunk)
+            // - outs/outs_with_insertion 与 chunk 是跨线程共享只读/线程索引访问的；tid/i 为线程私有。
+            #pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk)
             {
                 const int tid = omp_get_thread_num();
+                auto& out = *outs[static_cast<std::size_t>(tid)];
+                auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
 
                 // 这里每个 query 的处理耗时可能不均匀（不同长度/不同参考命中），用 dynamic(1) 先保证负载均衡。
                 // 若后续确认为均匀负载，可调整为 guided/static 并基准测试。
                 #pragma omp for schedule(dynamic, 1)
                 for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i)
                 {
-                    alignOneQueryToRef(chunk[static_cast<std::size_t>(i)], tid);
+                    alignOneQueryToRef(chunk[static_cast<std::size_t>(i)], out, out_insertion);
                 }
             }
 
@@ -273,6 +293,27 @@ namespace align {
             for (auto& w : outs_with_insertion) {
                 w->flush();
             }
+        }
+    }
+
+    void RefAligner::mergeAlignedResults(const FilePath& aligned_consensus_path)
+    {
+        // 将多个线程的 SAM 文件合并为一个文件
+        // 所有的序列都比对到多个参考序列上了，输入的参数为这些参考序列比对好的文件
+        // 因此要解析这些参考的互相对应关系，然后把它们合并到一个文件中
+
+        // 1. 第一步 星比对合并或者调用外部软件比对有插入的序列
+        // 首先把insertion的sam文件合并为fasta
+        FilePath result_dir = work_dir / RESULTS_DIR;
+
+        bool using_other_align_insertion = true;
+        if (using_other_align_insertion)
+        {
+
+        }
+        else
+        {
+
         }
     }
 
