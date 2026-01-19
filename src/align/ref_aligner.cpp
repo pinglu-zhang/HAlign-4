@@ -380,83 +380,86 @@ namespace align {
     // - 预分配 CIGAR 容器，减少内存重新分配
     // - 使用游程编码，压缩 CIGAR 大小
     // ------------------------------------------------------------------
-    std::unordered_map<std::string, cigar::Cigar_t> RefAligner::parseAlignedReferencesToCigar(
-        const FilePath& aligned_fasta_path) const
+    void RefAligner::parseAlignedReferencesToCigar(
+        const FilePath& aligned_fasta_path,
+        std::unordered_map<std::string, cigar::Cigar_t>& out_ref_aligned_map,
+        std::vector<bool>& out_ref_gap_pos) const
     {
-        std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map;
+        // 说明：
+        // - 本函数只做“流式读取 + 生成CIGAR(M/D)”这一件事，避免额外耦合。
+        // - out_ref_aligned_map / out_ref_gap_pos 由调用方创建并传入；本函数负责清空并填充。
+        // - out_ref_gap_pos 用于记录对齐矩阵中“参考（第一条序列）”每一列是否为 gap。
+
+        out_ref_aligned_map.clear();
+        out_ref_gap_pos.clear();
 
         // ------------------------------------------------------------------
-        // 步骤1：打开 FASTA 文件，跳过第一条序列（共识序列）
+        // 步骤1：打开 FASTA 并读取第一条序列（参考/共识序列），构建 ref_gap_pos
         // ------------------------------------------------------------------
         seq_io::KseqReader reader(aligned_fasta_path);
         seq_io::SeqRecord rec;
-
-
         // ------------------------------------------------------------------
-        // 步骤2：流式读取每个参考序列，逐个生成 CIGAR
-        // 规则：碱基 -> M，gap -> D
+        // 步骤2：流式读取后续序列，生成每条序列的 CIGAR（碱基->M，gap->D）
         // ------------------------------------------------------------------
         std::size_t ref_count = 0;
 
         while (reader.next(rec)) {
+            if (ref_count == 0)
+            {
+                // ref_gap_pos[i] == true  表示参考序列该列是 '-'
+                // ref_gap_pos[i] == false 表示参考序列该列是碱基
+                out_ref_gap_pos.reserve(rec.seq.size());
+                for (const char base : rec.seq) {
+                    out_ref_gap_pos.push_back(base == '-');
+                }
+            }
             cigar::Cigar_t cigar;
-            cigar.reserve(20);  // 预分配空间
+            cigar.reserve(20);  // 经验值：对齐后通常是少量游程段，预留可减少扩容
 
-            char current_op = '\0';           // 当前操作类型
-            std::uint32_t current_len = 0;    // 当前操作的连续长度
+            char current_op = '\0';
+            std::uint32_t current_len = 0;
 
-            // 遍历序列，生成 CIGAR（游程编码）
+            // 逐列扫描：碱基记为 M，gap 记为 D。
+            // 注意：这里保持原逻辑：不依赖参考序列列信息做一致性校验。
             for (const char base : rec.seq) {
-                // 判断操作类型：碱基 -> M，gap -> D
                 const char op = (base == '-') ? 'D' : 'M';
-
-                // 游程编码：压缩连续相同操作
                 if (op == current_op) {
                     ++current_len;
                 } else {
-                    // 操作类型变化：先写入上一个操作
                     if (current_op != '\0' && current_len > 0) {
                         cigar.push_back(cigar::cigarToInt(current_op, current_len));
                     }
-
-                    // 开始新操作
                     current_op = op;
                     current_len = 1;
                 }
             }
 
-            // 写入最后一个操作
             if (current_op != '\0' && current_len > 0) {
                 cigar.push_back(cigar::cigarToInt(current_op, current_len));
             }
 
-            // 存入 map
-            ref_aligned_map[rec.id] = std::move(cigar);
+            out_ref_aligned_map[rec.id] = std::move(cigar);
             ++ref_count;
 
-            #ifdef _DEBUG
-            const std::string cigar_str = cigar::cigarToString(ref_aligned_map[rec.id]);
+#ifdef _DEBUG
             spdlog::debug("parseAlignedReferencesToCigar: {} -> CIGAR: {}",
-                         rec.id, cigar_str);
-            #endif
+                         rec.id, cigar::cigarToString(out_ref_aligned_map[rec.id]));
+#endif
         }
 
         // ------------------------------------------------------------------
-        // 步骤3：验证至少有一条参考序列
+        // 步骤3：至少要有一条“后续序列”，否则认为输入不符合预期
         // ------------------------------------------------------------------
         if (ref_count == 0) {
             throw std::runtime_error(
-                "parseAlignedReferencesToCigar: 文件中只有共识序列，没有参考序列: " +
-                aligned_fasta_path.string()
-            );
+                "parseAlignedReferencesToCigar: 文件中只有参考/共识序列，没有后续序列: " +
+                aligned_fasta_path.string());
         }
 
-        #ifdef _DEBUG
-        spdlog::info("parseAlignedReferencesToCigar: 成功解析 {} 个参考序列的 CIGAR（从 {} 中）",
-                    ref_count, aligned_fasta_path.string());
-        #endif
-
-        return ref_aligned_map;
+#ifdef _DEBUG
+        spdlog::info("parseAlignedReferencesToCigar: 成功解析 {} 个序列的 CIGAR（从 {} 中），ref_gap_pos_len={} ",
+                    ref_count, aligned_fasta_path.string(), out_ref_gap_pos.size());
+#endif
     }
 
     void RefAligner::mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd)
@@ -512,17 +515,13 @@ namespace align {
         // 读取比对好参考序列文件，获得每个参考序列的和共识序列的比对结果，结果里应该只有M和D
         std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map;
         std::unordered_map<std::string, cigar::Cigar_t> insertion_aligned_map;
+        std::vector<bool> ref_gap_pos;                 // 共识/参考（第一条）每列是否为gap
+        std::vector<bool> insertion_ref_gap_pos;       // insertion MSA 中第一条序列每列是否为gap
         FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
 
-        // 调用辅助函数：解析 MSA 对齐文件，生成每个参考序列与共识序列的 CIGAR
-        // 说明：
-        // 1. consensus_aligned_file 是 MSA 对齐后的 FASTA 文件
-        // 2. 第一条序列为共识序列（consensus）
-        // 3. 后续序列为参考序列（ref_sequences）
-        // 4. 返回的 map 包含每个参考序列 ID 到其 CIGAR 的映射
-        // 5. CIGAR 只包含 M（匹配/错配）和 D（删除）操作
-        ref_aligned_map = parseAlignedReferencesToCigar(consensus_aligned_file);
-        insertion_aligned_map = parseAlignedReferencesToCigar(aligned_insertion_fasta);
+        // 调用辅助函数：解析 MSA 对齐文件，生成每个序列与“对齐矩阵列”的 CIGAR
+        parseAlignedReferencesToCigar(consensus_aligned_file, ref_aligned_map, ref_gap_pos);
+        parseAlignedReferencesToCigar(aligned_insertion_fasta, insertion_aligned_map, insertion_ref_gap_pos);
 
 #ifdef _DEBUG
         spdlog::info("mergeAlignedResults: 成功解析 {} 个参考序列的对齐关系",
@@ -532,10 +531,97 @@ namespace align {
 #endif
 
         FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / "final_aligned.fasta";
-        seq_io::SeqWriter final_writer(final_output_path);
+        seq_io::SeqWriter final_writer(final_output_path, U_MAX);
 
         // 首先先把consensus_aligned_file写入最终文件
-        // 如果keep_all_length为真，则正常把所有碱基都
+        seq_io::KseqReader cons_reader(consensus_aligned_file);
+        seq_io::SeqRecord cons_rec;
+        cigar::Cigar_t tmp_insertion_cigar =  insertion_aligned_map[consensus_seq.id];
+        // while (cons_reader.next(cons_rec))
+        // {
+        //     if (keep_first_length)
+        //     {
+        //         removeRefGapColumns(cons_rec.seq, ref_gap_pos);
+        //     }
+        //     // 说明：consensus 对自己比对，CIGAR 为空
+        //     cigar::alignQueryToRef(cons_rec.seq, tmp_insertion_cigar );
+        //     if (keep_all_length || keep_first_length)
+        //     {
+        //         removeRefGapColumns(cons_rec.seq, insertion_ref_gap_pos);
+        //     }
+        //
+        //     final_writer.writeFasta(cons_rec);
+        // }
+        // final_writer.flush();
+
+        // seq_io::KseqReader insertion_reader(aligned_insertion_fasta);
+        // seq_io::SeqRecord insertion_rec;
+        // while (insertion_reader.next(insertion_rec))
+        // {
+        //     if (keep_first_length || keep_all_length)
+        //     {
+        //         removeRefGapColumns(insertion_rec.seq, insertion_ref_gap_pos);
+        //     }
+        //     final_writer.writeFasta(insertion_rec);
+        // }
+        // final_writer.flush();
+
+        // 遍历所有的sam文件，转换为seqrecord
+        for (const auto& sam_path : outs_path)
+        {
+            seq_io::SamReader sam_reader(sam_path);
+            seq_io::SeqRecord sam_rec;
+            while (sam_reader.next(sam_rec))
+            {
+                // 这里可以对 sam_rec 进行处理
+            }
+        }
+
+
+    }
+
+    void RefAligner::removeRefGapColumns(
+        std::string& seq,
+        const std::vector<bool>& ref_gap_pos) const
+    {
+        // ------------------------------------------------------------------
+        // 设计要点：
+        // 1) 本函数只做"删列"这一件事：按 ref_gap_pos 过滤输入序列的列。
+        // 2) 原地修改，使用移动赋值减少拷贝。
+        // 3) ref_gap_pos 为空时不做任何操作。
+        // ------------------------------------------------------------------
+
+        // 1) ref_gap_pos 为空，不做任何操作
+        if (ref_gap_pos.empty()) {
+            return;
+        }
+
+        // 2) 对齐列数必须一致，否则说明输入序列与 ref_gap_pos 长度不匹配
+        if (seq.size() != ref_gap_pos.size()) {
+            throw std::runtime_error(
+                "removeRefGapColumns: seq length mismatch, seq_len=" + std::to_string(seq.size()) +
+                ", ref_gap_pos_len=" + std::to_string(ref_gap_pos.size()));
+        }
+
+        // 3) 过滤参考为 gap 的列。
+        // 性能：
+        // - 先统计保留列数用于 reserve，避免反复扩容。
+        std::size_t keep_len = 0;
+        for (const bool is_gap : ref_gap_pos) {
+            keep_len += static_cast<std::size_t>(!is_gap);
+        }
+
+        std::string filtered;
+        filtered.reserve(keep_len);
+
+        for (std::size_t i = 0; i < ref_gap_pos.size(); ++i) {
+            if (!ref_gap_pos[i]) {
+                filtered.push_back(seq[i]);
+            }
+        }
+
+        // 4) 使用移动赋值替换原序列（避免拷贝）
+        seq = std::move(filtered);
     }
 
 } // namespace align

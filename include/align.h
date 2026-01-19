@@ -293,33 +293,49 @@ namespace align {
 
         // ------------------------------------------------------------------
         // 辅助函数：parseAlignedReferencesToCigar
-        // 功能：读取 MSA 对齐后的参考序列文件，生成每个序列的 CIGAR
+        // 功能：读取 MSA 对齐后的参考序列文件，生成每个序列的 CIGAR（只包含 M 和 D）
+        //
+        // 重要变更（接口约定）：
+        // 1) 不再通过返回值返回 map，而是通过参数输出（避免大对象返回/移动，调用端更明确）
+        // 2) 新增 ref_gap_pos：标记“参考序列对齐后的每一列是否为 gap（'-'）”
+        //    - 这里的“参考序列”指该对齐文件中的第一条序列（通常是 consensus 或中心序列）
+        //    - ref_gap_pos[i] == true  表示第 i 列参考为 gap
+        //    - ref_gap_pos[i] == false 表示第 i 列参考为碱基
         //
         // 说明：
-        // - 这个 CIGAR 记录的是多序列比对矩阵中，哪些位置是碱基（M），哪些是 gap（D）
-        // - 对每个参考序列：碱基 -> M，gap（'-'） -> D
-        // - 使用游程编码压缩（例如 10 个连续 M -> "10M"）
+        // - 对于每个后续序列（参考/插入序列），只根据其自身字符是否为 '-' 来编码：碱基 -> M，gap -> D
+        // - 不做碱基一致性校验（例如与第一条序列的列一致性），保持当前逻辑等价
+        // ------------------------------------------------------------------
+        void parseAlignedReferencesToCigar(
+            const FilePath& aligned_fasta_path,
+            std::unordered_map<std::string, cigar::Cigar_t>& out_ref_aligned_map,
+            std::vector<bool>& out_ref_gap_pos) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：removeRefGapColumns
+        // 功能：根据 ref_gap_pos 删除"参考为 gap 的那些列"（原地修改）
+        //
+        // 使用场景：
+        // - 输入序列 seq 通常是"已经过 MSA 对齐"的序列（含 gap）
+        // - ref_gap_pos 记录了参考（第一条序列）每一列是否为 gap
+        // - 本函数会删除所有 ref_gap_pos[i]==true 的列，保留其余列
         //
         // 参数：
-        //   - aligned_fasta_path: MSA 对齐后的 FASTA 文件路径
+        //   - seq: 输入/输出序列（已对齐，包含 gap '-'）【原地修改】
+        //   - ref_gap_pos: 参考（第一条序列）每一列是否为 gap；true 表示该列应被删除
         //
-        // 返回：
-        //   std::unordered_map<std::string, cigar::Cigar_t>
-        //   - key: 参考序列 ID
-        //   - value: CIGAR（只包含 M 和 D）
+        // 正确性约束：
+        // - 若 ref_gap_pos 非空：要求 seq.size() == ref_gap_pos.size()
+        // - 若 ref_gap_pos 为空：seq 保持不变（不做任何操作）
         //
-        // 示例：
-        //   输入文件：
-        //     >ref1
-        //     ATC-ATCG  （位置 3 是 gap）
-        //     >ref2
-        //     ATCGATC-  （位置 7 是 gap）
-        //   输出：
-        //     ref_aligned_map["ref1"] = [3M, 1D, 4M]  -> "3M1D4M"
-        //     ref_aligned_map["ref2"] = [7M, 1D]      -> "7M1D"
+        // 性能：
+        // - 时间复杂度：O(N)，N 为序列长度
+        // - 空间复杂度：O(1)，原地修改（临时字符串复用移动语义）
+        // - 优化：预计算保留列数，单次分配 + 移动赋值
         // ------------------------------------------------------------------
-        std::unordered_map<std::string, cigar::Cigar_t> parseAlignedReferencesToCigar(
-            const FilePath& aligned_fasta_path) const;
+        void removeRefGapColumns(
+            std::string& seq,
+            const std::vector<bool>& ref_gap_pos) const;
 
         FilePath work_dir;
         seq_io::SeqRecords ref_sequences;
