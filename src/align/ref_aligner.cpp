@@ -306,8 +306,10 @@ namespace align {
         outs_with_insertion.resize(static_cast<std::size_t>(nthreads));  // 关键修复：必须 resize 以避免越界访问
 
         for (int tid = 0; tid < nthreads; ++tid) {
-            FilePath out_path = result_dir / ("thread" + std::to_string(tid) + ".sam");
-            FilePath out_path_insertion = result_dir / ("thread" + std::to_string(tid) + "_insertion.sam");
+            // 每个线程独立输出 SAM 文件，避免线程竞争
+            // 文件名格式：thread<tid>.sam 和 thread<tid>_insertion.sam
+            FilePath out_path = result_dir / (THREAD_SAM_PREFIX + std::to_string(tid) + THREAD_SAM_SUFFIX);
+            FilePath out_path_insertion = result_dir / (THREAD_SAM_PREFIX + std::to_string(tid) + THREAD_INSERTION_SAM_SUFFIX);
 
             outs_path[static_cast<std::size_t>(tid)] = out_path;
             outs_with_insertion_path[static_cast<std::size_t>(tid)] = out_path_insertion;
@@ -508,7 +510,7 @@ namespace align {
 
         bool using_other_align_insertion = true;  // 标志：是否使用外部 MSA 工具对齐插入序列
 
-        FilePath aligned_insertion_fasta = result_dir / "aligned_insertion.fasta";
+        FilePath aligned_insertion_fasta = result_dir / ALIGNED_INSERTION_FASTA;
 
         if (using_other_align_insertion)
         {
@@ -527,7 +529,7 @@ namespace align {
             // 子步骤 1.2：合并为单个 FASTA 文件（共识序列 + 插入序列）
             // ------------------------------------------------------------------
             // 定义输出 FASTA 文件路径
-            FilePath insertion_fasta_path = result_dir / "all_insertion.fasta";
+            FilePath insertion_fasta_path = result_dir / ALL_INSERTION_FASTA;
 
             // 调用辅助函数：将共识序列和所有 SAM 文件合并为一个 FASTA 文件
             // 说明：
@@ -551,8 +553,8 @@ namespace align {
             // 子步骤 1.3：调用外部 MSA 工具对齐插入序列
             // ------------------------------------------------------------------
             // alignConsensusSequence：调用外部命令（msa_cmd）执行多序列比对
-            // 输入：all_insertion.fasta（共识序列 + 插入序列）
-            // 输出：aligned_insertion.fasta（对齐后的 MSA 结果，所有序列等长）
+            // 输入：ALL_INSERTION_FASTA（共识序列 + 插入序列）
+            // 输出：ALIGNED_INSERTION_FASTA（对齐后的 MSA 结果，所有序列等长）
             // 说明：MSA 工具会将共识序列作为锚点，对齐所有插入序列
             alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta, msa_cmd, threads);
         }
@@ -609,7 +611,7 @@ namespace align {
         // ------------------------------------------------------------------
         // 阶段 3：初始化最终输出文件与序列长度检测机制
         // ------------------------------------------------------------------
-        FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / "final_aligned.fasta";
+        FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
         seq_io::SeqWriter final_writer(final_output_path, U_MAX);  // U_MAX：禁用缓冲阈值，手动控制 flush
 
         // 首先先把consensus_aligned_file写入最终文件
@@ -899,7 +901,7 @@ namespace align {
         // 阶段 5：最终验证与统计输出
         // ------------------------------------------------------------------
         // 说明：
-        // - 此时所有序列已经写入 final_aligned.fasta
+        // - 此时所有序列已经写入 FINAL_ALIGNED_FASTA
         // - seq_count：总序列数（共识序列 + 参考序列 + 插入序列 + 普通比对序列）
         // - expected_length：MSA 的统一长度（所有序列的长度）
         //
@@ -914,7 +916,7 @@ namespace align {
 
         // ==================================================================
         // 函数结束
-        // 输出：final_aligned.fasta（包含所有序列的 MSA 文件）
+        // 输出：FINAL_ALIGNED_FASTA（包含所有序列的 MSA 文件）
         // ==================================================================
     }
 

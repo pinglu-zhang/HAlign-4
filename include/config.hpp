@@ -58,6 +58,25 @@ const std::string CLEAN_CONS_FASTA = "consensus.fasta"; // 最终共识序列 FA
 const std::string CLEAN_CONS_JSON = "consensus.json";   // 共识统计/计数输出（JSON）
 
 // ------------------------------------------------------------------
+// 对齐输出相关的文件名（相对于 RESULTS_DIR）
+// ------------------------------------------------------------------
+// 说明：这些文件名用于多序列比对（MSA）和插入序列处理的中间文件与最终输出文件
+// 目的：集中管理文件名常量，避免在代码中硬编码字符串字面量，便于统一修改与维护
+
+// 最终对齐结果文件名（所有序列对齐后的 MSA 输出）
+#define FINAL_ALIGNED_FASTA "final_aligned.fasta"
+
+// 插入序列相关文件名
+#define ALL_INSERTION_FASTA "all_insertion.fasta"           // 合并的所有插入序列（未对齐）
+#define ALIGNED_INSERTION_FASTA "aligned_insertion.fasta"   // 对齐后的插入序列（MSA 结果）
+
+// 线程级别输出文件名模板（用于并行写出）
+// 说明：每个线程独立写出 SAM 文件，避免线程竞争；最后由主线程合并
+#define THREAD_SAM_PREFIX "thread"                          // 线程 SAM 文件前缀（"thread" + tid + ".sam"）
+#define THREAD_SAM_SUFFIX ".sam"                            // 线程 SAM 文件后缀
+#define THREAD_INSERTION_SAM_SUFFIX "_insertion.sam"        // 线程插入序列 SAM 文件后缀（"thread" + tid + "_insertion.sam"）
+
+// ------------------------------------------------------------------
 // 调试与整数精度配置
 // ------------------------------------------------------------------
 #ifndef DEBUG
