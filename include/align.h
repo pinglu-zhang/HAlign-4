@@ -755,9 +755,9 @@ namespace align {
         //   - seq: 输入/输出序列（已对齐，包含 gap '-'）【原地修改】
         //   - ref_gap_pos: 参考（第一条序列）每一列是否为 gap；true 表示该列应被删除
         // ------------------------------------------------------------------
-        void removeRefGapColumns(
+        static void removeRefGapColumns(
             std::string& seq,
-            const std::vector<bool>& ref_gap_pos) const;
+            const std::vector<bool>& ref_gap_pos);
 
 
         private:

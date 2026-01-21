@@ -1061,7 +1061,7 @@ namespace align {
 
     void RefAligner::removeRefGapColumns(
         std::string& seq,
-        const std::vector<bool>& ref_gap_pos) const
+        const std::vector<bool>& ref_gap_pos)
     {
         // ------------------------------------------------------------------
         // 设计要点：

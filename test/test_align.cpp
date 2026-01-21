@@ -739,8 +739,6 @@ TEST_SUITE("align_perf") {
         // 说明：测试"按 ref_gap_pos 删列"的纯过滤功能（原地修改）。
         // 输入序列已经是对齐后的（含 gap），本函数只负责删除参考为 gap 的列。
 
-        align::RefAligner aligner(".", "example/data/covid-ref.fasta", 21, 10, 2000, true, 1, "", true, false);
-
         // 输入：已对齐序列 "AC-GT"（长度 5）
         std::string seq = "AC-GT";
 
@@ -748,18 +746,17 @@ TEST_SUITE("align_perf") {
         // 我们删除第2列(0-based==2)这一列，输出应为 "ACGT"
         const std::vector<bool> ref_gap_pos = {false, false, true, false, false};
 
-        aligner.removeRefGapColumns(seq, ref_gap_pos);
+        align::RefAligner::removeRefGapColumns(seq, ref_gap_pos);
         CHECK(seq == "ACGT");
     }
 
     TEST_CASE("removeRefGapColumns - keep existing '-' as base when not in ref gap pos") {
         // 说明：输入序列本身含有 '-'，但只要 ref_gap_pos 该列为 false，就保留。
-        align::RefAligner aligner(".", "example/data/covid-ref.fasta", 21, 10, 2000, true, 1, "", true, false);
 
         std::string seq = "A-CG"; // 包含 1 个原生 '-'
         const std::vector<bool> ref_gap_pos = {false, false, false, false}; // 所有列都保留
 
-        aligner.removeRefGapColumns(seq, ref_gap_pos);
+        align::RefAligner::removeRefGapColumns(seq, ref_gap_pos);
         CHECK(seq == "A-CG");
     }
 
