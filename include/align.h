@@ -188,6 +188,57 @@ namespace cigar
     //   - 迭代比对：多次比对同一序列，每次都保留之前的 gap 并插入新 gap
     // ------------------------------------------------------------------
     void padQueryToRefByCigar(std::string& query, const Cigar_t& cigar);
+
+    // ------------------------------------------------------------------
+    // 函数：appendCigar - 将一个 CIGAR 追加到另一个 CIGAR，并智能合并相邻同类型操作
+    // ------------------------------------------------------------------
+    // 功能：
+    // 将 cigar_to_add 追加到 result 末尾，如果 result 的最后一个操作与
+    // cigar_to_add 的第一个操作类型相同，则合并它们（长度相加）
+    //
+    // 参数：
+    // @param result - 目标 CIGAR（会被修改）
+    // @param cigar_to_add - 要追加的 CIGAR
+    //
+    // 示例：
+    // result = [10M, 5I], cigar_to_add = [3I, 20M]
+    // 结果：result = [10M, 8I, 20M]  （5I + 3I 合并为 8I）
+    // ------------------------------------------------------------------
+    void appendCigar(Cigar_t& result, const Cigar_t& cigar_to_add);
+
+    // ------------------------------------------------------------------
+    // 函数：getRefLength - 计算 CIGAR 消耗的参考序列长度
+    // ------------------------------------------------------------------
+    // 功能：
+    // 统计 CIGAR 中所有消耗 ref 的操作（M/D/N/=/X）的总长度
+    //
+    // 参数：
+    // @param cigar - CIGAR 操作序列
+    //
+    // 返回：
+    // 参考序列被消耗的总长度
+    //
+    // 示例：
+    // cigar = "10M5I20M3D" -> 返回 33（10+20+3）
+    // ------------------------------------------------------------------
+    std::size_t getRefLength(const Cigar_t& cigar);
+
+    // ------------------------------------------------------------------
+    // 函数：getQueryLength - 计算 CIGAR 消耗的查询序列长度
+    // ------------------------------------------------------------------
+    // 功能：
+    // 统计 CIGAR 中所有消耗 query 的操作（M/I/S/=/X）的总长度
+    //
+    // 参数：
+    // @param cigar - CIGAR 操作序列
+    //
+    // 返回：
+    // 查询序列被消耗的总长度
+    //
+    // 示例：
+    // cigar = "10M5I20M3D" -> 返回 35（10+5+20）
+    // ------------------------------------------------------------------
+    std::size_t getQueryLength(const Cigar_t& cigar);
 }
 
 // ==================================================================
@@ -519,6 +570,11 @@ namespace align {
     cigar::Cigar_t globalAlignWFA2(const std::string& ref, const std::string& query);
 
     // cigar::Cigar_t extendAlignWFA2(const std::string& ref, const std::string& query, int zdrop = 200);
+
+
+    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+                                  const std::string& query,
+                                  const anchor::Anchors& anchors);
 
     // ==================================================================
     // RefAligner 类：高性能参考序列比对器（多序列比对 MSA 引擎）

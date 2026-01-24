@@ -314,5 +314,101 @@ namespace cigar
         assert(r == 0);
     }
 
+    // ------------------------------------------------------------------
+    // appendCigar：智能追加 CIGAR 并合并相邻同类型操作
+    // ------------------------------------------------------------------
+    // 设计目标：
+    // - 合并相邻同类型操作（如 5M + 3M -> 8M），减少 CIGAR 长度
+    // - 避免产生冗余操作（如 0M）
+    //
+    // 性能：O(cigar_to_add.size())，每个操作最多检查一次
+    // ------------------------------------------------------------------
+    void appendCigar(Cigar_t& result, const Cigar_t& cigar_to_add)
+    {
+        for (const CigarUnit cu : cigar_to_add) {
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(cu, op_char, len);
+
+            // 跳过长度为 0 的操作（防御性编程）
+            if (len == 0) continue;
+
+            if (result.empty()) {
+                // 结果为空，直接追加
+                result.push_back(cu);
+            } else {
+                // 检查是否可以与最后一个操作合并
+                char last_op_char;
+                uint32_t last_len = 0;
+                intToCigar(result.back(), last_op_char, last_len);
+
+                if (last_op_char == op_char) {
+                    // 相同操作类型，合并长度
+                    // 防溢出检查：确保合并后不超过 28 位
+                    constexpr uint32_t kMaxLen = (1u << 28) - 1u;
+                    if (static_cast<uint64_t>(last_len) + len > kMaxLen) {
+                        throw std::runtime_error("appendCigar: merged length overflow");
+                    }
+                    result.back() = cigarToInt(op_char, last_len + len);
+                } else {
+                    // 不同操作类型，直接追加
+                    result.push_back(cu);
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // getRefLength：计算 CIGAR 消耗的参考序列长度
+    // ------------------------------------------------------------------
+    // 说明：
+    // - 消耗 ref 的操作：M, D, N, =, X
+    // - 不消耗 ref 的操作：I, S, H, P
+    //
+    // 性能：O(cigar.size())，单次遍历
+    // ------------------------------------------------------------------
+    std::size_t getRefLength(const Cigar_t& cigar)
+    {
+        std::size_t total = 0;
+        for (const CigarUnit cu : cigar) {
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(cu, op_char, len);
+
+            // 消耗 ref 的操作
+            if (op_char == 'M' || op_char == 'D' || op_char == 'N' ||
+                op_char == '=' || op_char == 'X') {
+                total += len;
+            }
+        }
+        return total;
+    }
+
+    // ------------------------------------------------------------------
+    // getQueryLength：计算 CIGAR 消耗的查询序列长度
+    // ------------------------------------------------------------------
+    // 说明：
+    // - 消耗 query 的操作：M, I, S, =, X
+    // - 不消耗 query 的操作：D, N, H, P
+    //
+    // 性能：O(cigar.size())，单次遍历
+    // ------------------------------------------------------------------
+    std::size_t getQueryLength(const Cigar_t& cigar)
+    {
+        std::size_t total = 0;
+        for (const CigarUnit cu : cigar) {
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(cu, op_char, len);
+
+            // 消耗 query 的操作
+            if (op_char == 'M' || op_char == 'I' || op_char == 'S' ||
+                op_char == '=' || op_char == 'X') {
+                total += len;
+            }
+        }
+        return total;
+    }
+
 } // namespace cigar
 

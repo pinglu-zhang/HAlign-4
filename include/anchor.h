@@ -131,26 +131,7 @@ namespace anchor
     }
 
     // ------------------------------------------------------------------
-    // Chain 结构体：表示一条链（一组连续的锚点）
-    // ------------------------------------------------------------------
-    struct Chain {
-        std::int32_t score{0};                // 链的得分
-        std::int32_t cnt{0};                  // 链中的锚点数量
-        std::int32_t start_idx{0};            // 在排序后锚点数组中的起始索引
-
-        // 链的坐标范围（在原始序列中的位置）
-        std::uint32_t ref_start{0};           // 参考序列起始位置
-        std::uint32_t ref_end{0};             // 参考序列结束位置
-        std::uint32_t qry_start{0};           // 查询序列起始位置
-        std::uint32_t qry_end{0};             // 查询序列结束位置
-        std::uint32_t rid_ref{0};             // 参考序列 ID
-        bool is_rev{false};                   // 是否为反向链
-    };
-
-    using Chains = std::vector<Chain>;
-
-    // ------------------------------------------------------------------
-    // chainScoreSimple - 计算两个锚点之间的链化得分
+    // chainScoreSimple - 计算两个锚点之间的链化得分（内部辅助函数）
     // ------------------------------------------------------------------
     // 输入：
     //   ai    : 当前锚点（位置较大）
@@ -164,59 +145,39 @@ namespace anchor
     //   基础得分 = min(gap_ref, gap_qry, span)
     //   惩罚 = gap_penalty * |gap_ref - gap_qry| + skip_penalty * min(gap_ref, gap_qry)
     //   最终得分 = 基础得分 - 惩罚 - 0.5 * log2(|gap_ref - gap_qry| + 1)
+    //
+    // 注意：此函数仅供 chainAnchors 内部使用
     // ------------------------------------------------------------------
     std::int32_t chainScoreSimple(const Anchor& ai, const Anchor& aj, const ChainParams& params);
 
     // ------------------------------------------------------------------
-    // chainAnchors - 使用 DP 对锚点进行链化
+    // chainAnchors - 使用 DP 对锚点进行链化并返回最佳链
     // ------------------------------------------------------------------
+    // 功能：
+    // 使用动态规划算法对锚点进行链化，找出得分最高的锚点链。
+    // 参考 minimap2/lchain.c 的 mg_lchain_dp 实现。
+    //
     // 输入：
-    //   anchors : 锚点列表（会被排序）
+    //   anchors : 锚点列表（会被排序并修改）
     //   params  : 链化参数
     //
     // 输出：
-    //   返回链列表和重排后的锚点数组
+    //   返回最佳链包含的锚点列表（按位置顺序排列）
+    //   如果没有找到满足条件的链，返回空 Anchors
+    //
+    // 算法流程：
+    // 1. 对锚点按 (rid_ref, is_rev, pos_ref, pos_qry) 排序
+    // 2. 使用 DP 计算每个锚点的最优链接得分
+    // 3. 回溯提取得分最高的链
+    // 4. 检查链是否满足 min_cnt 和 min_score 条件
+    // 5. 返回最佳链的锚点列表
     //
     // 注意：
-    //   - 输入锚点会被按 (rid_ref, is_rev, pos_ref, pos_qry) 排序
-    //   - 返回的链按得分降序排列
+    //   - 输入 anchors 会被排序
+    //   - 返回的锚点按在链中的位置顺序排列（从前到后）
+    //   - 如果有多条得分相同的链，返回第一条
     // ------------------------------------------------------------------
-    Chains chainAnchors(Anchors& anchors, const ChainParams& params = default_chain_params());
-
-    // ------------------------------------------------------------------
-    // extractChainAnchors - 从链中提取锚点
-    // ------------------------------------------------------------------
-    // 输入：
-    //   chain   : 链信息
-    //   anchors : 排序后的锚点数组
-    //
-    // 输出：
-    //   返回该链包含的锚点（按位置顺序）
-    // ------------------------------------------------------------------
-    Anchors extractChainAnchors(const Chain& chain, const Anchors& anchors);
-
-    // ------------------------------------------------------------------
-    // getBestChain - 获取最佳链（得分最高）
-    // ------------------------------------------------------------------
-    // 输入：
-    //   chains : 链列表
-    //
-    // 输出：
-    //   返回得分最高的链的指针，若链表为空返回 nullptr
-    // ------------------------------------------------------------------
-    const Chain* getBestChain(const Chains& chains);
-
-    // ------------------------------------------------------------------
-    // getChainCoverage - 计算链覆盖的区域
-    // ------------------------------------------------------------------
-    // 输入：
-    //   chain   : 链信息
-    //   anchors : 锚点数组
-    //
-    // 输出：
-    //   返回 (ref_coverage, qry_coverage) - 分别是参考和查询序列的覆盖长度
-    // ------------------------------------------------------------------
-    std::pair<std::uint32_t, std::uint32_t> getChainCoverage(const Chain& chain, const Anchors& anchors);
+    Anchors chainAnchors(Anchors& anchors, const ChainParams& params = default_chain_params());
 
 } // namespace anchor
 

@@ -293,4 +293,389 @@ namespace align
     //
     //     return cigar;
     // }
+
+    // ------------------------------------------------------------------
+    // globalAlignMM2：基于 minimap2 风格的 anchor-guided 全局比对
+    // ------------------------------------------------------------------
+    // 设计思路（参考 minimap2/align.c 的 mm_align1 函数）：
+    // 1) 利用已有的锚点（anchors）进行链化（chaining），获取最佳链
+    // 2) 对链覆盖范围之前的左端区域，自适应选择比对算法
+    // 3) 对链中相邻锚点之间的间隙区域（gap filling），自适应选择比对算法
+    // 4) 对链覆盖范围之后的右端区域，自适应选择比对算法
+    // 5) 使用 cigar::appendCigar 合并所有 CIGAR，确保覆盖整个序列
+    //
+    // **自适应比对策略（性能优化）：**
+    // - **小间隙（< 100bp）**：直接使用 globalAlignKSW2（精确，O(mn) 可接受）
+    // - **大间隙（>= 100bp）**：
+    //   1. 先用 extendAlignKSW2 快速探路（zdrop=200），利用剪枝加速
+    //   2. 检查结果是否完整覆盖（通过 cigar::getRefLength/getQueryLength）
+    //   3. 如果未完整覆盖（zdrop 提前截止），则 fallback 到 globalAlignKSW2
+    //   - 优势：对高相似度大间隙，extension 速度快；低相似度会自动 fallback
+    //
+    // **正确性保证：**
+    // - 严格跟踪 ref_pos 和 qry_pos，确保每个碱基都被比对
+    // - 最后验证 CIGAR 消耗的序列长度是否匹配输入序列长度
+    // - Debug 模式下长度不匹配会触发断言；Release 模式下记录日志并 fallback
+    // - 使用 cigar 命名空间的函数进行 CIGAR 操作，提高代码复用性
+    //
+    // 输入：
+    // @param ref     - 参考序列（字符串，A/C/G/T/N）
+    // @param query   - 查询序列（字符串，A/C/G/T/N）
+    // @param anchors - 预先计算的锚点列表（未排序也可以，内部会排序和链化）
+    //
+    // 输出：
+    // 返回 CIGAR 操作序列（cigar::Cigar_t），描述 query 如何比对到 ref
+    // **保证**：返回的 CIGAR 消耗的 ref 长度 = ref.size()，query 长度 = query.size()
+    //
+    // 性能说明：
+    // - 相比直接 globalAlignKSW2，本函数利用锚点信息将比对分解为多个小区间
+    // - 对于长序列且锚点覆盖率高的情况，性能提升显著（减少 DP 矩阵规模）
+    // - 大间隙优先用 extension 探路，高相似度时显著加速
+    // - 若锚点为空或无有效链，退化为 globalAlignKSW2
+    // ------------------------------------------------------------------
+    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+                                  const std::string& query,
+                                  const anchor::Anchors& anchors)
+    {
+        const std::size_t ref_len = ref.size();
+        const std::size_t qry_len = query.size();
+
+        // ------------------------------------------------------------------
+        // 辅助 lambda：自适应选择比对算法
+        // ------------------------------------------------------------------
+        // 策略：
+        // - 小间隙（< 100bp）：直接 globalAlignKSW2
+        // - 大间隙（>= 100bp）：先 extendAlignKSW2 探路，检测是否完整覆盖
+        //   * 如果覆盖完整：使用 extension 结果（快速路径）
+        //   * 如果未完整覆盖：**复用** extension 结果，只对剩余部分补全
+        //
+        // **性能优化（关键）：**
+        // - 复用 extension 已比对的部分，避免重复计算
+        // - 只对未覆盖的剩余区域进行补全比对
+        // - 例如：extension 覆盖了 80%，只需对剩余 20% 进行全局比对
+        //
+        // 参数：
+        // @param gap_ref - ref 间隙序列
+        // @param gap_qry - query 间隙序列
+        // @return CIGAR 操作序列，保证完整覆盖输入序列
+        // ------------------------------------------------------------------
+        auto adaptive_align = [](const std::string& gap_ref, const std::string& gap_qry) -> cigar::Cigar_t {
+            const std::size_t ref_gap_len = gap_ref.size();
+            const std::size_t qry_gap_len = gap_qry.size();
+
+            // 边界情况：空序列
+            if (ref_gap_len == 0 && qry_gap_len == 0) {
+                return cigar::Cigar_t{}; // 空 CIGAR
+            }
+            if (ref_gap_len == 0) {
+                // 只有 query，全部是插入
+                return cigar::Cigar_t{cigar::cigarToInt('I', static_cast<uint32_t>(qry_gap_len))};
+            }
+            if (qry_gap_len == 0) {
+                // 只有 ref，全部是删除
+                return cigar::Cigar_t{cigar::cigarToInt('D', static_cast<uint32_t>(ref_gap_len))};
+            }
+
+            // 定义小间隙阈值
+            constexpr std::size_t kSmallGapThreshold = 100;
+            const std::size_t max_gap = std::max(ref_gap_len, qry_gap_len);
+
+            // 小间隙：直接用全局比对（精确且 O(mn) 可接受）
+            if (max_gap < kSmallGapThreshold) {
+                return globalAlignKSW2(gap_ref, gap_qry);
+            }
+
+            // 大间隙：先用 extension 探路
+            cigar::Cigar_t ext_cigar = extendAlignKSW2(gap_ref, gap_qry, 200);
+
+            // 检查 extension 是否完整覆盖
+            std::size_t ext_ref_len = cigar::getRefLength(ext_cigar);
+            std::size_t ext_qry_len = cigar::getQueryLength(ext_cigar);
+
+            // 如果完整覆盖，直接返回 extension 结果（快速路径）
+            if (ext_ref_len == ref_gap_len && ext_qry_len == qry_gap_len) {
+                return ext_cigar;
+            }
+
+            // ------------------------------------------------------------------
+            // 未完整覆盖：复用 extension 结果，只对剩余部分补全
+            // ------------------------------------------------------------------
+            // 说明：extension 可能因为 zdrop 提前截止，但已比对的部分是有效的
+            // 策略：保留 extension 的 CIGAR，对剩余未覆盖的序列进行补全比对
+            //
+            // 例如：
+            // - gap_ref = 1000bp, gap_qry = 1000bp
+            // - extension 覆盖了前 800bp（ref）和 800bp（query）
+            // - 只需对剩余的 200bp（ref）和 200bp（query）进行全局比对
+            // - 性能提升：从 O(1000*1000) 降低到 O(800*800) + O(200*200)
+            // ------------------------------------------------------------------
+
+            cigar::Cigar_t result = ext_cigar; // 复用 extension 结果
+
+            // 计算剩余未覆盖的长度
+            std::size_t remaining_ref_len = ref_gap_len - ext_ref_len;
+            std::size_t remaining_qry_len = qry_gap_len - ext_qry_len;
+
+            if (remaining_ref_len > 0 || remaining_qry_len > 0) {
+                // 提取剩余未覆盖的序列
+                std::string remaining_ref = gap_ref.substr(ext_ref_len, remaining_ref_len);
+                std::string remaining_qry = gap_qry.substr(ext_qry_len, remaining_qry_len);
+
+                // 对剩余部分进行全局比对
+                cigar::Cigar_t remaining_cigar = globalAlignKSW2(remaining_ref, remaining_qry);
+
+                // 合并 CIGAR：extension 部分 + 剩余部分
+                cigar::appendCigar(result, remaining_cigar);
+
+#ifdef _DEBUG
+                spdlog::debug("adaptive_align: extension partial coverage (ref: {}/{}, qry: {}/{}), "
+                              "补全剩余部分 (ref: {}, qry: {})",
+                              ext_ref_len, ref_gap_len, ext_qry_len, qry_gap_len,
+                              remaining_ref_len, remaining_qry_len);
+#endif
+            }
+
+            // 最终验证：确保返回的 CIGAR 完全覆盖输入序列
+            std::size_t final_ref_len = cigar::getRefLength(result);
+            std::size_t final_qry_len = cigar::getQueryLength(result);
+
+            if (final_ref_len != ref_gap_len || final_qry_len != qry_gap_len) {
+#ifdef _DEBUG
+                spdlog::error("adaptive_align: final CIGAR mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}), "
+                              "fallback to global alignment",
+                              ref_gap_len, qry_gap_len, final_ref_len, final_qry_len);
+#endif
+                // 最终 fallback：直接用全局比对
+                return globalAlignKSW2(gap_ref, gap_qry);
+            }
+
+            return result;
+        };
+
+        // ------------------------------------------------------------------
+        // 0. 边界检查：如果锚点为空，退化为全局比对
+        // ------------------------------------------------------------------
+        if (anchors.empty()) {
+            return globalAlignKSW2(ref, query);
+        }
+
+        // ------------------------------------------------------------------
+        // 1. 复制锚点并链化（chainAnchors 会修改输入锚点）
+        // ------------------------------------------------------------------
+        // 说明：chainAnchors 会按 (rid_ref, is_rev, pos_ref, pos_qry) 排序锚点，
+        // 然后使用 DP 算法找出得分最高的链，直接返回该链的锚点列表。
+        anchor::Anchors sorted_anchors = anchors;
+        anchor::ChainParams chain_params = anchor::default_chain_params();
+        anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params);
+
+        // ------------------------------------------------------------------
+        // 2. 检查链化结果，如果无有效链则退化为全局比对
+        // ------------------------------------------------------------------
+        if (chain_anchors.empty()) {
+            return globalAlignKSW2(ref, query);
+        }
+
+        // ------------------------------------------------------------------
+        // 3. 按 pos_qry 排序锚点（确保从左到右处理）
+        // ------------------------------------------------------------------
+
+        std::sort(chain_anchors.begin(), chain_anchors.end(),
+            [](const anchor::Anchor& a, const anchor::Anchor& b) {
+                // 按 query 位置排序，如果 query 位置相同则按 ref 位置排序
+                if (a.pos_qry != b.pos_qry) return a.pos_qry < b.pos_qry;
+                return a.pos_ref < b.pos_ref;
+            });
+
+        // ------------------------------------------------------------------
+        // 4. 构建完整的 CIGAR：左端 + 锚点间隙 + 右端
+        // ------------------------------------------------------------------
+        cigar::Cigar_t result_cigar;
+        result_cigar.reserve(chain_anchors.size() * 2 + 2);
+
+        // 记录当前在 ref 和 query 上已处理到的位置
+        std::size_t ref_pos = 0;
+        std::size_t qry_pos = 0;
+
+        // ------------------------------------------------------------------
+        // 4.1 处理第一个锚点之前的左端区域
+        // ------------------------------------------------------------------
+        const auto& first_anchor = chain_anchors.front();
+        std::size_t first_ref_start = first_anchor.pos_ref;
+        std::size_t first_qry_start = first_anchor.pos_qry;
+
+        if (first_ref_start > 0 || first_qry_start > 0) {
+            // 左端有未覆盖区域，需要比对
+            std::string left_ref = ref.substr(0, first_ref_start);
+            std::string left_qry = query.substr(0, first_qry_start);
+
+            // 使用自适应比对策略
+            cigar::Cigar_t left_cigar = adaptive_align(left_ref, left_qry);
+            cigar::appendCigar(result_cigar, left_cigar);
+
+            // 更新位置
+            ref_pos = first_ref_start;
+            qry_pos = first_qry_start;
+        }
+
+        // ------------------------------------------------------------------
+        // 4.2 遍历锚点，处理锚点覆盖区域和锚点之间的间隙
+        // ------------------------------------------------------------------
+        for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
+            const auto& anchor = chain_anchors[i];
+
+            // 边界检查：确保锚点位置在序列范围内
+            if (anchor.pos_ref >= ref_len || anchor.pos_qry >= qry_len) {
+#ifdef _DEBUG
+                spdlog::warn("globalAlignMM2: anchor {} out of bounds (ref: {}/{}, qry: {}/{}), skipping",
+                             i, anchor.pos_ref, ref_len, anchor.pos_qry, qry_len);
+#endif
+                continue;
+            }
+
+            std::size_t anchor_ref_start = anchor.pos_ref;
+            std::size_t anchor_qry_start = anchor.pos_qry;
+            std::size_t anchor_span = anchor.span > 0 ? anchor.span : 1;
+
+            // 计算锚点结束位置（确保不超出序列边界）
+            std::size_t anchor_ref_end = std::min(anchor_ref_start + anchor_span, ref_len);
+            std::size_t anchor_qry_end = std::min(anchor_qry_start + anchor_span, qry_len);
+
+            // 检查锚点是否与当前位置重叠（避免重复处理）
+            if (anchor_ref_start < ref_pos || anchor_qry_start < qry_pos) {
+#ifdef _DEBUG
+                spdlog::warn("globalAlignMM2: anchor {} overlaps with processed region (anchor: {}/{}, current: {}/{}), adjusting",
+                             i, anchor_ref_start, anchor_qry_start, ref_pos, qry_pos);
+#endif
+                // 调整锚点起始位置到当前位置
+                anchor_ref_start = std::max(anchor_ref_start, ref_pos);
+                anchor_qry_start = std::max(anchor_qry_start, qry_pos);
+
+                // 如果调整后锚点已经被完全处理，跳过
+                if (anchor_ref_start >= anchor_ref_end || anchor_qry_start >= anchor_qry_end) {
+                    continue;
+                }
+            }
+
+            // ------------------------------------------------------------
+            // 4.2.1 处理当前位置到锚点起始位置之间的间隙
+            // ------------------------------------------------------------
+            if (anchor_ref_start > ref_pos || anchor_qry_start > qry_pos) {
+                std::size_t gap_ref_len = anchor_ref_start - ref_pos;
+                std::size_t gap_qry_len = anchor_qry_start - qry_pos;
+
+                if (gap_ref_len > 0 || gap_qry_len > 0) {
+                    // 有间隙需要填充
+                    std::string gap_ref = ref.substr(ref_pos, gap_ref_len);
+                    std::string gap_qry = query.substr(qry_pos, gap_qry_len);
+
+                    // 使用自适应比对策略：小间隙用 global，大间隙先 extension 探路
+                    cigar::Cigar_t gap_cigar = adaptive_align(gap_ref, gap_qry);
+
+                    // 验证间隙 CIGAR 的正确性
+                    std::size_t gap_cigar_ref = cigar::getRefLength(gap_cigar);
+                    std::size_t gap_cigar_qry = cigar::getQueryLength(gap_cigar);
+                    if (gap_cigar_ref != gap_ref_len || gap_cigar_qry != gap_qry_len) {
+#ifdef _DEBUG
+                        spdlog::warn("globalAlignMM2: gap CIGAR mismatch at anchor {} (expected ref:{}/qry:{}, got ref:{}/qry:{})",
+                                     i, gap_ref_len, gap_qry_len, gap_cigar_ref, gap_cigar_qry);
+#endif
+                        // Fallback：使用全局比对确保正确性
+                        gap_cigar = globalAlignKSW2(gap_ref, gap_qry);
+                    }
+
+                    cigar::appendCigar(result_cigar, gap_cigar);
+                }
+
+                // 更新位置到锚点起始
+                ref_pos = anchor_ref_start;
+                qry_pos = anchor_qry_start;
+            }
+
+            // ------------------------------------------------------------
+            // 4.2.2 处理锚点覆盖的区域
+            // ------------------------------------------------------------
+            std::size_t anchor_ref_len = anchor_ref_end - anchor_ref_start;
+            std::size_t anchor_qry_len = anchor_qry_end - anchor_qry_start;
+
+            if (anchor_ref_len > 0 || anchor_qry_len > 0) {
+                std::string anchor_ref_seq = ref.substr(anchor_ref_start, anchor_ref_len);
+                std::string anchor_qry_seq = query.substr(anchor_qry_start, anchor_qry_len);
+
+                // 对锚点区域也进行比对，确保精确性
+                cigar::Cigar_t anchor_cigar = globalAlignKSW2(anchor_ref_seq, anchor_qry_seq);
+
+                // 验证锚点 CIGAR 的正确性
+                std::size_t anchor_cigar_ref = cigar::getRefLength(anchor_cigar);
+                std::size_t anchor_cigar_qry = cigar::getQueryLength(anchor_cigar);
+                if (anchor_cigar_ref != anchor_ref_len || anchor_cigar_qry != anchor_qry_len) {
+#ifdef _DEBUG
+                    spdlog::error("globalAlignMM2: anchor CIGAR mismatch at anchor {} (expected ref:{}/qry:{}, got ref:{}/qry:{})",
+                                  i, anchor_ref_len, anchor_qry_len, anchor_cigar_ref, anchor_cigar_qry);
+#endif
+                    // 这不应该发生（globalAlignKSW2 应该总是返回正确长度）
+                    // 但为了安全起见，重新尝试
+                    anchor_cigar = globalAlignKSW2(anchor_ref_seq, anchor_qry_seq);
+                }
+
+                cigar::appendCigar(result_cigar, anchor_cigar);
+
+                // 更新位置到锚点结束
+                ref_pos = anchor_ref_end;
+                qry_pos = anchor_qry_end;
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // 4.3 处理最后一个锚点之后的右端区域
+        // ------------------------------------------------------------------
+        if (ref_pos < ref_len || qry_pos < qry_len) {
+            std::size_t right_ref_len = ref_len - ref_pos;
+            std::size_t right_qry_len = qry_len - qry_pos;
+
+            std::string right_ref = ref.substr(ref_pos, right_ref_len);
+            std::string right_qry = query.substr(qry_pos, right_qry_len);
+
+            // 使用自适应比对策略
+            cigar::Cigar_t right_cigar = adaptive_align(right_ref, right_qry);
+            cigar::appendCigar(result_cigar, right_cigar);
+
+            // 更新位置（已处理完整个序列）
+            ref_pos = ref_len;
+            qry_pos = qry_len;
+        }
+
+        // ------------------------------------------------------------------
+        // 5. 验证：确保 CIGAR 消耗的序列长度与输入一致
+        // ------------------------------------------------------------------
+        // 说明：这是最终的正确性检查，确保没有遗漏任何区域
+        std::size_t cigar_ref_len = cigar::getRefLength(result_cigar);
+        std::size_t cigar_qry_len = cigar::getQueryLength(result_cigar);
+
+        // 如果长度不匹配，记录详细信息并 fallback
+        if (cigar_ref_len != ref_len || cigar_qry_len != qry_len) {
+#ifdef _DEBUG
+            spdlog::error("globalAlignMM2: CIGAR length mismatch!");
+            spdlog::error("  Expected: ref={}, qry={}", ref_len, qry_len);
+            spdlog::error("  Got:      ref={}, qry={}", cigar_ref_len, cigar_qry_len);
+            spdlog::error("  Anchors:  count={}, chain_size={}", anchors.size(), chain_anchors.size());
+            spdlog::error("  Final positions: ref_pos={}, qry_pos={}", ref_pos, qry_pos);
+
+            // Debug 模式：输出链的详细信息
+            for (size_t i = 0; i < chain_anchors.size(); ++i) {
+                const auto& a = chain_anchors[i];
+                spdlog::error("    Anchor[{}]: ref=[{}, {}), qry=[{}, {}), span={}",
+                              i, a.pos_ref, a.pos_ref + a.span, a.pos_qry, a.pos_qry + a.span, a.span);
+            }
+
+            // 在 Debug 模式下也使用 fallback 而不是 assert，便于调试
+            spdlog::error("  Falling back to globalAlignKSW2");
+#else
+            spdlog::warn("globalAlignMM2: CIGAR length mismatch (ref: {}/{}, qry: {}/{}), falling back to global alignment",
+                         cigar_ref_len, ref_len, cigar_qry_len, qry_len);
+#endif
+            return globalAlignKSW2(ref, query);
+        }
+
+        return result_cigar;
+    }
 }

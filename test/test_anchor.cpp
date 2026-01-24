@@ -260,8 +260,8 @@ TEST_SUITE("anchor")
     TEST_CASE("chainAnchors - 空输入返回空链")
     {
         anchor::Anchors anchors;
-        auto chains = anchor::chainAnchors(anchors);
-        CHECK(chains.empty());
+        auto best_chain = anchor::chainAnchors(anchors);
+        CHECK(best_chain.empty());
     }
 
     TEST_CASE("chainAnchors - 单个锚点形成单链")
@@ -273,11 +273,11 @@ TEST_SUITE("anchor")
         params.min_cnt = 1;  // 允许单锚点链
         params.min_score = 10;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        REQUIRE(chains.size() == 1);
-        CHECK(chains[0].cnt == 1);
-        CHECK(chains[0].score == 20);  // score = span
+        REQUIRE(!best_chain.empty());
+        CHECK(best_chain.size() == 1);
+        CHECK(best_chain[0].span == 20);
     }
 
     TEST_CASE("chainAnchors - 两个可链接锚点形成单链")
@@ -292,22 +292,24 @@ TEST_SUITE("anchor")
         params.min_cnt = 2;
         params.min_score = 30;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        REQUIRE(chains.size() == 1);
-        CHECK(chains[0].cnt == 2);
-        CHECK(chains[0].score >= 30);
+        REQUIRE(!best_chain.empty());
+        CHECK(best_chain.size() == 2);
+        // 验证锚点按位置排序
+        CHECK(best_chain[0].pos_ref < best_chain[1].pos_ref);
     }
 
-    TEST_CASE("chainAnchors - 不同参考序列的锚点分别成链")
+    TEST_CASE("chainAnchors - 不同参考序列的锚点只返回最佳链")
     {
         anchor::Anchors anchors;
 
-        // 链 A：rid_ref=0
-        anchors.push_back(makeAnchor(0x111111, 100, 50, 0, 0, false, 15));
-        anchors.push_back(makeAnchor(0x222222, 150, 100, 0, 0, false, 15));
+        // 链 A：rid_ref=0，得分较高
+        anchors.push_back(makeAnchor(0x111111, 100, 50, 0, 0, false, 20));
+        anchors.push_back(makeAnchor(0x222222, 150, 100, 0, 0, false, 20));
+        anchors.push_back(makeAnchor(0x555555, 200, 150, 0, 0, false, 20));
 
-        // 链 B：rid_ref=1
+        // 链 B：rid_ref=1，得分较低
         anchors.push_back(makeAnchor(0x333333, 200, 150, 1, 0, false, 15));
         anchors.push_back(makeAnchor(0x444444, 250, 200, 1, 0, false, 15));
 
@@ -315,44 +317,37 @@ TEST_SUITE("anchor")
         params.min_cnt = 2;
         params.min_score = 20;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        // 应该形成 2 条链
-        REQUIRE(chains.size() == 2);
-
-        // 验证每条链的 rid_ref 一致
-        CHECK(chains[0].rid_ref != chains[1].rid_ref);
+        // 应该返回得分更高的链 A（rid_ref=0）
+        REQUIRE(!best_chain.empty());
+        CHECK(best_chain[0].rid_ref == 0);
+        CHECK(best_chain.size() >= 2);
     }
 
-    TEST_CASE("chainAnchors - 正向和反向锚点分别成链")
+    TEST_CASE("chainAnchors - 正向和反向锚点只返回最佳链")
     {
         anchor::Anchors anchors;
 
-        // 正向链
-        anchors.push_back(makeAnchor(0x111111, 100, 50, 0, 0, false, 15));
-        anchors.push_back(makeAnchor(0x222222, 150, 100, 0, 0, false, 15));
+        // 正向链（得分更高）
+        anchors.push_back(makeAnchor(0x111111, 100, 50, 0, 0, false, 20));
+        anchors.push_back(makeAnchor(0x222222, 150, 100, 0, 0, false, 20));
+        anchors.push_back(makeAnchor(0x666666, 200, 150, 0, 0, false, 20));
 
-        // 反向链
-        anchors.push_back(makeAnchor(0x333333, 200, 150, 0, 0, true, 15));
-        anchors.push_back(makeAnchor(0x444444, 250, 200, 0, 0, true, 15));
+        // 反向链（得分较低）
+        anchors.push_back(makeAnchor(0x333333, 300, 250, 0, 0, true, 15));
+        anchors.push_back(makeAnchor(0x444444, 350, 300, 0, 0, true, 15));
 
         anchor::ChainParams params;
         params.min_cnt = 2;
         params.min_score = 20;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        REQUIRE(chains.size() == 2);
-
-        // 一条正向，一条反向
-        bool has_forward = false;
-        bool has_reverse = false;
-        for (const auto& chain : chains) {
-            if (chain.is_rev) has_reverse = true;
-            else has_forward = true;
-        }
-        CHECK(has_forward);
-        CHECK(has_reverse);
+        // 应该返回得分更高的正向链
+        REQUIRE(!best_chain.empty());
+        CHECK(best_chain[0].is_rev == false);
+        CHECK(best_chain.size() >= 2);
     }
 
     TEST_CASE("chainAnchors - 距离过远的锚点不链接")
@@ -368,19 +363,18 @@ TEST_SUITE("anchor")
         params.min_score = 10;
         params.max_dist_x = 5000;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        // 应该形成 2 条独立的链（距离过远无法链接）
-        REQUIRE(chains.size() == 2);
-        CHECK(chains[0].cnt == 1);
-        CHECK(chains[1].cnt == 1);
+        // 应该只返回一个锚点（距离过远无法链接）
+        REQUIRE(!best_chain.empty());
+        CHECK(best_chain.size() == 1);
     }
 
     TEST_CASE("chainAnchors - 对角线偏移超过带宽时不链接")
     {
         anchor::Anchors anchors;
 
-        // 两个锚点，对角线偏移 = |dr - dq| = |100 - 50| = 50
+        // 两个锚点，对角线偏移 = |dr - dq| = |150 - 100| = 50
         // 如果 bw < 50，应该不链接
         anchors.push_back(makeAnchor(0x111111, 100, 50, 0, 0, false, 20));
         anchors.push_back(makeAnchor(0x222222, 250, 150, 0, 0, false, 20));
@@ -391,10 +385,11 @@ TEST_SUITE("anchor")
         params.min_score = 10;
         params.bw = 30;  // 带宽 < 50，应该不链接
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        // 应该形成 2 条独立的链
-        REQUIRE(chains.size() == 2);
+        // 应该只返回一个锚点（对角线偏移超过带宽）
+        REQUIRE(!best_chain.empty());
+        CHECK(best_chain.size() == 1);
     }
 
     TEST_CASE("chainAnchors - 多条链按得分降序排列")
@@ -414,12 +409,12 @@ TEST_SUITE("anchor")
         params.min_cnt = 2;
         params.min_score = 20;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        REQUIRE(chains.size() == 2);
+        REQUIRE(!best_chain.empty());
 
-        // 验证按得分降序
-        CHECK(chains[0].score >= chains[1].score);
+        // 应该返回得分更高的链 A（3 个锚点）
+        CHECK(best_chain.size() == 3);
     }
 
     // ------------------------------------------------------------------
@@ -439,10 +434,10 @@ TEST_SUITE("anchor")
         params.min_cnt = 3;
         params.min_score = 10;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
         // 应该没有链（不满足 min_cnt）
-        CHECK(chains.empty());
+        CHECK(best_chain.empty());
     }
 
     TEST_CASE("chainAnchors - min_score 过滤低分链")
@@ -457,13 +452,13 @@ TEST_SUITE("anchor")
         params.min_cnt = 2;
         params.min_score = 50;  // 要求得分 >= 50
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
         // 得分太低，应该被过滤
-        CHECK(chains.empty());
+        CHECK(best_chain.empty());
     }
 
-    TEST_CASE("chainAnchors - 坐标范围计算正确")
+    TEST_CASE("chainAnchors - 返回锚点按位置排序")
     {
         anchor::Anchors anchors;
 
@@ -474,17 +469,16 @@ TEST_SUITE("anchor")
         params.min_cnt = 2;
         params.min_score = 30;
 
-        auto chains = anchor::chainAnchors(anchors, params);
+        auto best_chain = anchor::chainAnchors(anchors, params);
 
-        REQUIRE(chains.size() == 1);
+        REQUIRE(!best_chain.empty());
+        REQUIRE(best_chain.size() == 2);
 
-        // ref 范围：100 到 200+25 = 225
-        CHECK(chains[0].ref_start == 100);
-        CHECK(chains[0].ref_end == 225);
-
-        // qry 范围：50 到 150+25 = 175
-        CHECK(chains[0].qry_start == 50);
-        CHECK(chains[0].qry_end == 175);
+        // 验证锚点按位置顺序排列
+        CHECK(best_chain[0].pos_ref == 100);
+        CHECK(best_chain[1].pos_ref == 200);
+        CHECK(best_chain[0].pos_qry == 50);
+        CHECK(best_chain[1].pos_qry == 150);
     }
 }
 
