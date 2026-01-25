@@ -133,6 +133,10 @@ struct Options {
 	// - keep_all_length  ：保持“所有中心序列”的长度不变，适用于后续流程严格依赖原始长度坐标系（代价通常更高）。
 	bool keep_first_length = false; // --keep-first-length
 	bool keep_all_length = false;   // --keep-all-length
+
+	// workdir 清理开关：
+	// - save_workdir：若为 true，则在完成比对/输出后保留工作目录；若为 false（默认），则在成功完成后删除工作目录。
+	bool save_workdir = false;      // --save-workdir
 };
 
 
@@ -191,6 +195,10 @@ static void setupCli(CLI::App& app, Options& opt) {
         "Keep only the first/center sequence length unchanged");
     app.add_flag("--keep-all-length", opt.keep_all_length,
         "Keep all center sequences length unchanged");
+
+    // workdir 管理：是否在完成后保留工作目录
+    app.add_flag("--save-workdir", opt.save_workdir,
+        "Keep the working directory after alignment completion (default: remove)");
 }
 
 // logParsedOptions：把解析后的参数以漂亮的表格形式输出到日志
@@ -222,7 +230,8 @@ static void logParsedOptions(const Options& opt) {
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
         {"keep_first_length", boolToStr(opt.keep_first_length)},
-        {"keep_all_length", boolToStr(opt.keep_all_length)}
+        {"keep_all_length", boolToStr(opt.keep_all_length)},
+        {"save_workdir", boolToStr(opt.save_workdir)}
     };
 
     std::ostringstream oss;
