@@ -299,39 +299,38 @@ namespace align
     // ------------------------------------------------------------------
     // 设计思路（参考 minimap2/align.c 的 mm_align1 函数）：
     // 1) 利用已有的锚点（anchors）进行链化（chaining），获取最佳链
-    // 2) 对链覆盖范围之前的左端区域，自适应选择比对算法
-    // 3) 对链中相邻锚点之间的间隙区域（gap filling），自适应选择比对算法
-    // 4) 对链覆盖范围之后的右端区域，自适应选择比对算法
+    // 2) 对链覆盖范围之前的左端区域进行比对
+    // 3) 对链中相邻锚点之间的间隙区域（gap filling）进行比对
+    // 4) 对链覆盖范围之后的右端区域进行比对
     // 5) 使用 cigar::appendCigar 合并所有 CIGAR，确保覆盖整个序列
     //
-    // **自适应比对策略（性能优化）：**
-    // - **小间隙（< 100bp）**：直接使用 globalAlignKSW2（精确，O(mn) 可接受）
-    // - **大间隙（>= 100bp）**：
-    //   1. 先用 extendAlignKSW2 快速探路（zdrop=200），利用剪枝加速
-    //   2. 检查结果是否完整覆盖（通过 cigar::getRefLength/getQueryLength）
-    //   3. 如果未完整覆盖（zdrop 提前截止），则 fallback 到 globalAlignKSW2
-    //   - 优势：对高相似度大间隙，extension 速度快；低相似度会自动 fallback
+    // **比对算法选择（灵活性）：**
+    // - 通过 align_func 参数传入比对函数（默认 globalAlignKSW2）
+    // - 可以选择 globalAlignWFA2 或其他符合签名的比对函数
+    // - 所有分段都使用同一个比对函数，保证一致性
     //
     // **正确性保证：**
     // - 严格跟踪 ref_pos 和 qry_pos，确保每个碱基都被比对
     // - 最后验证 CIGAR 消耗的序列长度是否匹配输入序列长度
-    // - Debug 模式下长度不匹配会触发断言；Release 模式下记录日志并 fallback
+    // - Debug 模式下长度不匹配会触发错误日志
     // - 使用 cigar 命名空间的函数进行 CIGAR 操作，提高代码复用性
     //
     // 输入：
-    // @param ref     - 参考序列（字符串，A/C/G/T/N）
-    // @param query   - 查询序列（字符串，A/C/G/T/N）
-    // @param anchors - 预先计算的锚点列表（未排序也可以，内部会排序和链化）
+    // @param ref        - 参考序列（字符串，A/C/G/T/N）
+    // @param query      - 查询序列（字符串，A/C/G/T/N）
+    // @param anchors    - 预先计算的锚点列表（未排序也可以，内部会排序和链化）
+    // @param align_func - 可选的比对函数（默认为 nullptr，会使用 globalAlignKSW2）
+    //                     可以传入 globalAlignWFA2 或其他符合签名的比对函数
     //
     // 输出：
     // 返回 CIGAR 操作序列（cigar::Cigar_t），描述 query 如何比对到 ref
     // **保证**：返回的 CIGAR 消耗的 ref 长度 = ref.size()，query 长度 = query.size()
     //
     // 性能说明：
-    // - 相比直接 globalAlignKSW2，本函数利用锚点信息将比对分解为多个小区间
+    // - 相比直接全局比对，本函数利用锚点信息将比对分解为多个小区间
     // - 尤其对长序列且锚点覆盖率高的情况，性能提升显著（减少 DP 矩阵规模）
-    // - 大间隙优先用 extension 探路，高相似度时显著加速
-    // - 若锚点为空或无有效链，退化为 globalAlignKSW2
+    // - 通过 align_func 参数可以灵活选择不同算法，适应不同相似度和长度场景
+    // - 若锚点为空或无有效链，退化为使用 align_func 的全局比对（默认为 globalAlignKSW2）
     // ------------------------------------------------------------------
     cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,

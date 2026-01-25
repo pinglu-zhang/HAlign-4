@@ -11,8 +11,8 @@
 // 1) 解析命令行参数（使用 CLI11），并把值绑定到 Options 结构；
 // 2) 校验参数（例如文件存在性、工作目录准备、外部 MSA 命令模板测试）；
 // 3) 调用预处理（preprocessInputFasta）把原始输入复制/下载到工作目录并清洗；
-// 4) 执行针对共识序列的多序列比对（外部工具，通过命令模板），并产生对齐结果；
-// 5) 以多线程并行/分批的方式生成最终共识序列并写出结果文件。
+// 4) 使用 RefAligner 将查询序列比对到参考序列（中心序列/共识序列）；
+// 5) 合并比对结果并输出最终的对齐文件。
 //
 // 注：本文件中对各步骤尽量保持小而明确的职责划分，使得错误更易定位并便于在 CI 中逐步测试。
 // checkOption：参数再校验与工作目录准备
@@ -77,10 +77,10 @@ int main(int argc, char** argv) {
     // 3) 打印并校验参数
     // 4) 准备 logger 输出到工作目录
     // 5) 运行预处理（fetch/copy + 清洗 + Top-K 选择）
-    // 6) 对选出的共识未对齐序列调用外部 MSA（alignConsensusSequence）
-    // 7) 若输入序列总数 <= cons_n，则直接复制对齐结果为最终输出并退出
-    // 8) 否则调用 consensus::generateConsensusSequence（多线程/分批/可能双缓冲实现）产出最终共识
-    // 9) 后续步骤：分组、双序列比对、合并等（TODO）
+    // 6) 若用户指定了 center_path，则直接拷贝到工作目录；否则从预处理结果中选取
+    // 7) 若输入序列总数 <= cons_n，则调用外部 MSA 对齐并直接输出退出（快速路径）
+    // 8) 否则使用 RefAligner 进行比对（alignQueryToRef）和合并（mergeAlignedResults）
+    // 9) 输出最终的对齐结果文件
 
     try
     {
@@ -173,9 +173,8 @@ int main(int argc, char** argv) {
         FilePath final_output_path = FilePath(opt.workdir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
         file_io::copyFile(final_output_path, FilePath(opt.output));
         spdlog::info("Final aligned output written to {}", opt.output);
-        // 后续流程（概要）：
-        // - 使用 minimizer / k-mer 方法估算序列间相似度并分组；
-        // - 对于每个分组使用多序列比对并生成局部共识；
+
+        spdlog::info("halign4 End!");
 
         return 0;
     } catch (const std::exception &e) {
