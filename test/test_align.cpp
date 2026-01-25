@@ -283,7 +283,7 @@ TEST_SUITE("align") {
 
     TEST_CASE("globalAlignWFA2 - 精确匹配") {
         std::string seq = "ACGTACGTACGT";
-        auto cigar = align::RefAligner::globalAlign(seq, seq, 1.0);
+        auto cigar = align::globalAlignWFA2(seq, seq);
 
         REQUIRE(cigar.size() >= 1);
         std::string cigar_str = cigarToString(cigar);
@@ -308,7 +308,7 @@ TEST_SUITE("align") {
         // 三种方法都应该能正确比对
         auto cigar_ksw2 = align::globalAlignKSW2(ref, query);
         auto cigar_extend = align::extendAlignKSW2(ref, query, 200);
-        auto cigar_wfa2 = align::RefAligner::globalAlign(ref, query, 0.99);
+        auto cigar_wfa2 = align::globalAlignWFA2(ref, query);
 
         // 验证 CIGAR 都不为空
         CHECK(cigar_ksw2.size() > 0);
@@ -326,7 +326,7 @@ TEST_SUITE("align") {
         std::string query = mutateSequence(ref, 0.01, 0.01, 54322);
 
         auto cigar_ksw2 = align::globalAlignKSW2(ref, query);
-        auto cigar_wfa2 = align::RefAligner::globalAlign(ref, query, 0.98);
+        auto cigar_wfa2 = align::globalAlignWFA2(ref, query);
 
         // 验证 CIGAR 包含不同类型的操作
         std::string cigar_str_ksw2 = cigarToString(cigar_ksw2);
@@ -559,7 +559,7 @@ TEST_SUITE("align_perf") {
         {
             Timer timer;
             for (const auto& [ref, query] : test_pairs) {
-                auto cigar = align::RefAligner::globalAlign(ref, query, 0.95);
+                auto cigar = align::globalAlignWFA2(ref, query);
                 (void)cigar;
             }
             double elapsed = timer.elapsedMs();
@@ -641,7 +641,7 @@ TEST_SUITE("align_perf") {
         {
             Timer timer;
             for (const auto& [ref, query] : test_pairs) {
-                auto cigar = align::RefAligner::globalAlign(ref, query, 0.95);
+                auto cigar = align::globalAlignWFA2(ref, query);
                 (void)cigar;
             }
             double elapsed = timer.elapsedMs();
@@ -722,7 +722,7 @@ TEST_SUITE("align_perf") {
         {
             Timer timer;
             for (const auto& [ref, query] : test_pairs) {
-                auto cigar = align::RefAligner::globalAlign(ref, query, 0.95);
+                auto cigar = align::globalAlignWFA2(ref, query);
                 (void)cigar;
             }
             double elapsed = timer.elapsedMs();
@@ -745,83 +745,6 @@ TEST_SUITE("align_perf") {
         std::cout << "========================================================\n\n";
     }
 
-    // ------------------------------------------------------------------
-    // 性能测试：不同突变率下的表现
-    // ------------------------------------------------------------------
-    TEST_CASE("Performance - Different mutation rates") {
-        constexpr int NUM_RUNS = 100;
-        constexpr size_t SEQ_LEN = 1000;
-
-        std::cout << "\n========== 不同突变率性能测试 (1000bp, " << NUM_RUNS << " 次) ==========\n";
-
-        std::vector<double> snp_rates = {0.0, 0.01, 0.05, 0.10};
-
-        for (double snp_rate : snp_rates) {
-            std::cout << "\n  SNP率: " << (snp_rate * 100) << "%\n";
-
-            std::vector<std::pair<std::string, std::string>> test_pairs;
-            std::vector<anchor::Anchors> anchors_list;
-
-            for (int i = 0; i < NUM_RUNS; ++i) {
-                std::string ref = generateRandomDNA(SEQ_LEN, i * 2);
-                std::string query = mutateSequence(ref, snp_rate, 0.005, i * 2 + 1);
-                test_pairs.emplace_back(ref, query);
-
-                // 生成锚点（每 150bp 一个）
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 20 < SEQ_LEN; pos += 150) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 20;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
-                anchors_list.push_back(anchors);
-            }
-
-            {
-                Timer timer;
-                for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::globalAlignKSW2(ref, query);
-                    (void)cigar;
-                }
-                double elapsed = timer.elapsedMs();
-                std::cout << "    KSW2:  " << std::fixed << std::setprecision(2)
-                          << (elapsed / NUM_RUNS) << " ms/次\n";
-            }
-
-            {
-                Timer timer;
-                for (const auto& [ref, query] : test_pairs) {
-                    // 根据 SNP 率估算相似度（0.0 -> 1.0, 0.01 -> 0.99, 0.05 -> 0.95, 0.10 -> 0.90）
-                    double estimated_similarity = 1.0 - snp_rate;
-                    auto cigar = align::RefAligner::globalAlign(ref, query, estimated_similarity);
-                    (void)cigar;
-                }
-                double elapsed = timer.elapsedMs();
-                std::cout << "    WFA2:  " << std::fixed << std::setprecision(2)
-                          << (elapsed / NUM_RUNS) << " ms/次\n";
-            }
-
-            {
-                Timer timer;
-                for (size_t i = 0; i < test_pairs.size(); ++i) {
-                    const auto& [ref, query] = test_pairs[i];
-                    auto cigar = align::globalAlignMM2(ref, query, anchors_list[i]);
-                    (void)cigar;
-                }
-                double elapsed = timer.elapsedMs();
-                std::cout << "    MM2:   " << std::fixed << std::setprecision(2)
-                          << (elapsed / NUM_RUNS) << " ms/次\n";
-            }
-        }
-
-        std::cout << "========================================================\n\n";
-    }
 
     // ------------------------------------------------------------------
     // 性能测试：高相似度序列（95%-99.9%，真实测序场景）
@@ -919,7 +842,7 @@ TEST_SUITE("align_perf") {
                 Timer timer;
                 for (const auto& [ref, query] : test_pairs) {
                     // 使用预期相似度（已在 SimilarityLevel 中定义）
-                    auto cigar = align::RefAligner::globalAlign(ref, query, level.similarity / 100.0);
+                    auto cigar = align::globalAlignWFA2(ref, query);
                     (void)cigar;
                 }
                 double elapsed = timer.elapsedMs();
@@ -1025,7 +948,7 @@ TEST_SUITE("align_perf") {
             {
                 Timer timer;
                 for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::RefAligner::globalAlign(ref, query, 0.98);
+                    auto cigar = align::globalAlignWFA2(ref, query);
                     (void)cigar;
                 }
                 wfa2_time = timer.elapsedMs() / NUM_RUNS;
@@ -1049,6 +972,127 @@ TEST_SUITE("align_perf") {
                       << std::setw(15) << mm2_time << "\n";
         }
 
+        std::cout << "========================================================\n\n";
+    }
+
+    // ------------------------------------------------------------------
+    // 性能测试：长度差异扩展性（固定长 ref，变化短 query）
+    // ------------------------------------------------------------------
+    TEST_CASE("Performance - Length difference scalability (30k ref vs varying query)") {
+        constexpr int NUM_RUNS = 30;
+        constexpr size_t REF_LEN = 30000;  // 固定 ref 长度为 3w bp
+        constexpr double SIMILARITY = 0.95; // 95% 相似度
+        constexpr double SNP_RATE = 0.03;   // 3% SNP
+        constexpr double INDEL_RATE = 0.02; // 2% indel
+
+        std::cout << "\n========== 长度差异扩展性测试 (ref=" << REF_LEN << "bp, 相似度 ~95%, " << NUM_RUNS << " 次) ==========\n";
+        std::cout << "说明：模拟长 ref 序列与不同长度 query 的比对性能（测试长度不对称场景）\n\n";
+
+        std::vector<size_t> query_lengths = {100, 500, 1000, 5000, 10000, 15000, 20000, 25000};
+
+        std::cout << std::setw(12) << "Query长度"
+                  << std::setw(15) << "KSW2(ms)"
+                  << std::setw(15) << "Extend(ms)"
+                  << std::setw(15) << "WFA2(ms)"
+                  << std::setw(15) << "MM2(ms)" << "\n";
+        std::cout << std::string(72, '-') << "\n";
+
+        for (size_t query_len : query_lengths) {
+            // 生成测试数据
+            std::vector<std::pair<std::string, std::string>> test_pairs;
+            std::vector<anchor::Anchors> anchors_list;
+
+            for (int i = 0; i < NUM_RUNS; ++i) {
+                // 固定生成 30k ref
+                std::string ref = generateRandomDNA(REF_LEN, i * 7);
+
+                // 从 ref 中选择一段连续区域作为 query 的模板（模拟真实比对场景）
+                // 选择中间偏前的位置，确保有足够空间
+                size_t start_pos = (REF_LEN - query_len) / 3;
+                std::string ref_segment = ref.substr(start_pos, query_len);
+
+                // 在该段上施加突变，得到 query（95% 相似度）
+                std::string query = mutateSequence(ref_segment, SNP_RATE, INDEL_RATE, i * 7 + 1);
+
+                test_pairs.emplace_back(ref, query);
+
+                // 生成锚点：在 ref 和 query 的对应区域
+                // 锚点间隔根据 query 长度调整
+                size_t anchor_interval = std::max(size_t(100), query_len / 8);
+                anchor::Anchors anchors;
+
+                for (size_t offset = 0; offset + 20 < query_len; offset += anchor_interval) {
+                    anchor::Anchor a;
+                    a.hash = (start_pos + offset) * 1000 + i;
+                    a.rid_ref = 0;
+                    a.pos_ref = static_cast<uint32_t>(start_pos + offset);  // ref 上的实际位置
+                    a.rid_qry = 0;
+                    a.pos_qry = static_cast<uint32_t>(offset);              // query 上的对应位置
+                    a.span = 20;
+                    a.is_rev = false;
+                    anchors.push_back(a);
+                }
+                anchors_list.push_back(anchors);
+            }
+
+            double ksw2_time = 0.0;
+            double extend_time = 0.0;
+            double wfa2_time = 0.0;
+            double mm2_time = 0.0;
+
+            // KSW2 全局比对
+            {
+                Timer timer;
+                for (const auto& [ref, query] : test_pairs) {
+                    auto cigar = align::globalAlignKSW2(ref, query);
+                    (void)cigar;
+                }
+                ksw2_time = timer.elapsedMs() / NUM_RUNS;
+            }
+
+            // KSW2 延伸模式（从锚点延伸）
+            {
+                Timer timer;
+                for (const auto& [ref, query] : test_pairs) {
+                    auto cigar = align::extendAlignKSW2(ref, query, 200);
+                    (void)cigar;
+                }
+                extend_time = timer.elapsedMs() / NUM_RUNS;
+            }
+
+            // WFA2 全局比对
+            {
+                Timer timer;
+                for (const auto& [ref, query] : test_pairs) {
+                    auto cigar = align::globalAlignWFA2(ref, query);
+                    (void)cigar;
+                }
+                wfa2_time = timer.elapsedMs() / NUM_RUNS;
+            }
+
+            // MM2 锚点辅助比对
+            {
+                Timer timer;
+                for (size_t i = 0; i < test_pairs.size(); ++i) {
+                    const auto& [ref, query] = test_pairs[i];
+                    auto cigar = align::globalAlignMM2(ref, query, anchors_list[i]);
+                    (void)cigar;
+                }
+                mm2_time = timer.elapsedMs() / NUM_RUNS;
+            }
+
+            std::cout << std::setw(12) << query_len
+                      << std::setw(15) << std::fixed << std::setprecision(3) << ksw2_time
+                      << std::setw(15) << extend_time
+                      << std::setw(15) << wfa2_time
+                      << std::setw(15) << mm2_time << "\n";
+        }
+
+        std::cout << "\n备注：\n";
+        std::cout << "  - 该测试模拟真实场景：长参考序列与变长查询序列比对\n";
+        std::cout << "  - Query 是从 Ref 的某个区域提取并突变得到（95% 相似度）\n";
+        std::cout << "  - 锚点辅助算法（MM2/Extend）在此场景下应显著减少搜索空间\n";
+        std::cout << "  - KSW2 全局比对复杂度为 O(m*n)，在 ref 很长时会有明显开销\n";
         std::cout << "========================================================\n\n";
     }
 
@@ -1135,7 +1179,7 @@ TEST_SUITE("align_perf") {
                 Timer timer;
                 for (const auto& [ref, query] : test_pairs) {
                     double similarity = 1.0 - level.snp_rate - level.indel_rate;
-                    auto cigar = align::RefAligner::globalAlign(ref, query, similarity);
+                    auto cigar = align::globalAlignWFA2(ref, query);
                     (void)cigar;
                 }
                 wfa2_time = timer.elapsedMs() / NUM_RUNS;
@@ -1163,103 +1207,6 @@ TEST_SUITE("align_perf") {
         std::cout << "========================================================\n\n";
     }
 
-    // ------------------------------------------------------------------
-    // 性能测试：结构变异（SV）场景
-    // ------------------------------------------------------------------
-    TEST_CASE("Performance - Structural variants") {
-        constexpr int NUM_RUNS = 30;
-        constexpr size_t SEQ_LEN = 1500;
-
-        std::cout << "\n========== 结构变异性能测试 (1500bp, " << NUM_RUNS << " 次) ==========\n";
-        std::cout << "说明：测试算法处理大片段 SV 的性能\n\n";
-
-        struct SVPerfCase {
-            std::string type;
-            size_t size;
-            const char* desc;
-        };
-
-        std::vector<SVPerfCase> sv_cases = {
-            {"INS", 100, "100bp 插入"},
-            {"DEL", 100, "100bp 删除"},
-            {"INV", 150, "150bp 倒位"},
-            {"DUP", 150, "150bp 重复"}
-        };
-
-        std::cout << std::setw(20) << "SV 类型"
-                  << std::setw(15) << "KSW2(ms)"
-                  << std::setw(15) << "WFA2(ms)"
-                  << std::setw(15) << "MM2(ms)" << "\n";
-        std::cout << std::string(65, '-') << "\n";
-
-        for (const auto& sv_case : sv_cases) {
-            std::vector<std::pair<std::string, std::string>> test_pairs;
-            std::vector<anchor::Anchors> anchors_list;
-
-            for (int i = 0; i < NUM_RUNS; ++i) {
-                std::string ref = generateRandomDNA(SEQ_LEN, i * 3);
-                size_t sv_pos = SEQ_LEN / 3;
-                std::string query = generateSVSequence(ref, sv_case.type, sv_pos, sv_case.size, i * 3 + 1);
-                test_pairs.emplace_back(ref, query);
-
-                // 生成 SV 两侧的锚点
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 20 < sv_pos; pos += 120) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 20;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
-                anchors_list.push_back(anchors);
-            }
-
-            double ksw2_time = 0.0, wfa2_time = 0.0, mm2_time = 0.0;
-
-            // KSW2
-            {
-                Timer timer;
-                for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::globalAlignKSW2(ref, query);
-                    (void)cigar;
-                }
-                ksw2_time = timer.elapsedMs() / NUM_RUNS;
-            }
-
-            // WFA2
-            {
-                Timer timer;
-                for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::RefAligner::globalAlign(ref, query, 0.85);
-                    (void)cigar;
-                }
-                wfa2_time = timer.elapsedMs() / NUM_RUNS;
-            }
-
-            // MM2
-            {
-                Timer timer;
-                for (size_t i = 0; i < test_pairs.size(); ++i) {
-                    const auto& [ref, query] = test_pairs[i];
-                    auto cigar = align::globalAlignMM2(ref, query, anchors_list[i]);
-                    (void)cigar;
-                }
-                mm2_time = timer.elapsedMs() / NUM_RUNS;
-            }
-
-            std::cout << std::setw(20) << sv_case.desc
-                      << std::setw(15) << std::fixed << std::setprecision(3) << ksw2_time
-                      << std::setw(15) << wfa2_time
-                      << std::setw(15) << mm2_time << "\n";
-        }
-
-        std::cout << "\n备注：SV 会导致比对矩阵扩大，影响所有算法性能\n";
-        std::cout << "========================================================\n\n";
-    }
 
     // ------------------------------------------------------------------
     // 性能测试：globalAlignMM2 vs globalAlignKSW2（带锚点 vs 无锚点）
@@ -1790,7 +1737,7 @@ TEST_SUITE("align") {
 
                 // WFA2
                 {
-                    auto cigar = align::RefAligner::globalAlign(ref, query, similarity);
+                    auto cigar = align::globalAlignWFA2(ref, query);
                     auto& stats = algorithm_stats["WFA2"];
                     stats.total_tests++;
                     if (verifyCigar(ref, query, cigar)) {
@@ -1882,7 +1829,7 @@ TEST_SUITE("align") {
 
                 // WFA2
                 {
-                    auto cigar = align::RefAligner::globalAlign(ref, query, similarity);
+                    auto cigar = align::globalAlignWFA2(ref, query);
                     auto& stats = algorithm_stats["WFA2"];
                     stats.total_tests++;
                     if (verifyCigar(ref, query, cigar)) {
@@ -1922,259 +1869,8 @@ TEST_SUITE("align") {
         std::cout << "========================================================\n\n";
     }
 
-    // ------------------------------------------------------------------
-    // 测试：插入/删除密集区域的准确性
-    // ------------------------------------------------------------------
-    TEST_CASE("Accuracy - Indel-rich regions") {
-        constexpr int NUM_TESTS = 30;
-        constexpr size_t SEQ_LEN = 300;
 
-        std::cout << "\n========== 插入/删除密集区域准确性测试 (300bp, " << NUM_TESTS << " 次) ==========\n";
-        std::cout << "说明：测试算法处理频繁 indel 的能力\n\n";
 
-        struct IndelLevel {
-            double indel_rate;
-            const char* desc;
-        };
-
-        std::vector<IndelLevel> levels = {
-            {0.02, "低密度 (2%)"},
-            {0.05, "中密度 (5%)"},
-            {0.10, "高密度 (10%)"},
-            {0.15, "极高密度 (15%)"}
-        };
-
-        for (const auto& level : levels) {
-            size_t ksw2_valid = 0, wfa2_valid = 0, mm2_valid = 0;
-
-            for (int i = 0; i < NUM_TESTS; ++i) {
-                std::string ref = generateRandomDNA(SEQ_LEN, i * 3);
-                std::string query = mutateSequence(ref, 0.01, level.indel_rate, i * 3 + 1);
-
-                // Indel 密集区域：使用更小的 k 值以容忍更多变异
-                anchor::Anchors anchors = generateRealAnchors(ref, query, 11, 6);
-
-                if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
-                if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, 0.90))) wfa2_valid++;
-                if (verifyCigar(ref, query, align::globalAlignMM2(ref, query, anchors))) mm2_valid++;
-            }
-
-            double ksw2_acc = 100.0 * ksw2_valid / NUM_TESTS;
-            double wfa2_acc = 100.0 * wfa2_valid / NUM_TESTS;
-            double mm2_acc = 100.0 * mm2_valid / NUM_TESTS;
-
-            std::cout << level.desc << ":\n";
-            std::cout << "  KSW2: " << std::fixed << std::setprecision(1) << ksw2_acc << "% (" << ksw2_valid << "/" << NUM_TESTS << ")\n";
-            std::cout << "  WFA2: " << wfa2_acc << "% (" << wfa2_valid << "/" << NUM_TESTS << ")\n";
-            std::cout << "  MM2:  " << mm2_acc << "% (" << mm2_valid << "/" << NUM_TESTS << ")\n\n";
-        }
-
-        std::cout << "========================================================\n\n";
-    }
-
-    // ------------------------------------------------------------------
-    // 测试：结构变异（SV）准确性 - 单个 SV
-    // ------------------------------------------------------------------
-    TEST_CASE("Accuracy - Single structural variants") {
-        constexpr int NUM_TESTS = 20;
-        constexpr size_t SEQ_LEN = 1000;
-
-        std::cout << "\n========== 结构变异准确性测试 (1000bp, " << NUM_TESTS << " 次) ==========\n";
-        std::cout << "说明：测试算法处理大片段插入、删除、倒位、重复的能力\n\n";
-
-        struct SVTestCase {
-            std::string type;
-            size_t size;
-            const char* desc;
-        };
-
-        std::vector<SVTestCase> sv_cases = {
-            {"INS", 50,  "50bp 插入"},
-            {"INS", 200, "200bp 插入"},
-            {"DEL", 50,  "50bp 删除"},
-            {"DEL", 200, "200bp 删除"},
-            {"INV", 100, "100bp 倒位"},
-            {"DUP", 100, "100bp 重复"}
-        };
-
-        for (const auto& sv_case : sv_cases) {
-            size_t ksw2_valid = 0, wfa2_valid = 0, mm2_valid = 0;
-
-            for (int i = 0; i < NUM_TESTS; ++i) {
-                std::string ref = generateRandomDNA(SEQ_LEN, i * 4);
-                size_t sv_pos = SEQ_LEN / 3;  // SV 位置在序列 1/3 处
-                std::string query = generateSVSequence(ref, sv_case.type, sv_pos, sv_case.size, i * 4 + 1);
-
-                // 为 SV 场景生成锚点（SV 两侧）
-                anchor::Anchors anchors;
-                // 左侧锚点
-                for (size_t pos = 0; pos + 20 < sv_pos; pos += 100) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 20;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
-                // 右侧锚点（需要根据 SV 类型调整 query 位置）
-                size_t right_start_ref = sv_pos + sv_case.size;
-                size_t right_start_qry = sv_pos;
-                if (sv_case.type == "INS") {
-                    right_start_qry = sv_pos + sv_case.size;
-                } else if (sv_case.type == "DUP") {
-                    right_start_qry = sv_pos + sv_case.size * 2;
-                }
-
-                for (size_t pos = right_start_ref; pos + 20 < SEQ_LEN; pos += 100) {
-                    if (pos < SEQ_LEN) {
-                        anchor::Anchor a;
-                        a.hash = pos * 1000 + i + 1000000;
-                        a.rid_ref = 0;
-                        a.pos_ref = static_cast<uint32_t>(pos);
-                        a.rid_qry = 0;
-                        a.pos_qry = static_cast<uint32_t>(right_start_qry + (pos - right_start_ref));
-                        a.span = 20;
-                        a.is_rev = false;
-                        if (a.pos_qry + 20 <= query.size()) {
-                            anchors.push_back(a);
-                        }
-                    }
-                }
-
-                // 测试各算法
-                if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
-                if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, 0.85))) wfa2_valid++;
-                if (verifyCigar(ref, query, align::globalAlignMM2(ref, query, anchors))) mm2_valid++;
-            }
-
-            double ksw2_acc = 100.0 * ksw2_valid / NUM_TESTS;
-            double wfa2_acc = 100.0 * wfa2_valid / NUM_TESTS;
-            double mm2_acc = 100.0 * mm2_valid / NUM_TESTS;
-
-            std::cout << sv_case.desc << ":\n";
-            std::cout << "  KSW2: " << std::fixed << std::setprecision(1) << ksw2_acc << "% (" << ksw2_valid << "/" << NUM_TESTS << ")\n";
-            std::cout << "  WFA2: " << wfa2_acc << "% (" << wfa2_valid << "/" << NUM_TESTS << ")\n";
-            std::cout << "  MM2:  " << mm2_acc << "% (" << mm2_valid << "/" << NUM_TESTS << ")\n\n";
-        }
-
-        std::cout << "备注：单个 SV 场景相对简单，所有算法应能较好处理\n";
-        std::cout << "========================================================\n\n";
-    }
-
-    // ------------------------------------------------------------------
-    // 测试：复杂结构变异（多个 SV 组合）
-    // ------------------------------------------------------------------
-    TEST_CASE("Accuracy - Complex structural variants") {
-        constexpr int NUM_TESTS = 15;
-        constexpr size_t SEQ_LEN = 2000;
-
-        std::cout << "\n========== 复杂结构变异准确性测试 (2000bp, " << NUM_TESTS << " 次) ==========\n";
-        std::cout << "说明：测试算法处理多个 SV 组合的能力\n\n";
-
-        struct ComplexSVCase {
-            std::vector<SVEvent> events;
-            const char* desc;
-        };
-
-        std::vector<ComplexSVCase> complex_cases = {
-            {
-                {{"INS", 500, 100}, {"DEL", 1200, 80}},
-                "插入 + 删除"
-            },
-            {
-                {{"DEL", 400, 150}, {"DUP", 1000, 100}},
-                "删除 + 重复"
-            },
-            {
-                {{"INS", 300, 80}, {"INV", 800, 120}, {"DEL", 1500, 100}},
-                "插入 + 倒位 + 删除"
-            },
-            {
-                {{"DUP", 400, 100}, {"DUP", 1000, 100}},
-                "多个重复"
-            }
-        };
-
-        for (const auto& complex_case : complex_cases) {
-            size_t ksw2_valid = 0, wfa2_valid = 0, mm2_valid = 0;
-
-            for (int i = 0; i < NUM_TESTS; ++i) {
-                std::string ref = generateRandomDNA(SEQ_LEN, i * 5);
-                std::string query = generateComplexSVSequence(ref, complex_case.events, i * 5 + 1);
-
-                // 复杂 SV：使用更保守的参数（较小的 k 和 w）
-                anchor::Anchors anchors = generateRealAnchors(ref, query, 11, 6);
-
-                if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
-                if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, 0.80))) wfa2_valid++;
-                if (verifyCigar(ref, query, align::globalAlignMM2(ref, query, anchors))) mm2_valid++;
-            }
-
-            double ksw2_acc = 100.0 * ksw2_valid / NUM_TESTS;
-            double wfa2_acc = 100.0 * wfa2_valid / NUM_TESTS;
-            double mm2_acc = 100.0 * mm2_valid / NUM_TESTS;
-
-            std::cout << complex_case.desc << ":\n";
-            std::cout << "  KSW2: " << std::fixed << std::setprecision(1) << ksw2_acc << "% (" << ksw2_valid << "/" << NUM_TESTS << ")\n";
-            std::cout << "  WFA2: " << wfa2_acc << "% (" << wfa2_valid << "/" << NUM_TESTS << ")\n";
-            std::cout << "  MM2:  " << mm2_acc << "% (" << mm2_valid << "/" << NUM_TESTS << ")\n\n";
-        }
-
-        std::cout << "备注：复杂 SV 是最具挑战性的场景，MM2 依赖锚点质量\n";
-        std::cout << "========================================================\n\n";
-    }
-
-    // ------------------------------------------------------------------
-    // 测试：不同长度下的准确性
-    // ------------------------------------------------------------------
-    TEST_CASE("Accuracy - Different sequence lengths") {
-        constexpr int NUM_TESTS = 20;
-        constexpr double SIMILARITY = 0.95;
-        constexpr double SNP_RATE = 0.03;
-        constexpr double INDEL_RATE = 0.02;
-
-        std::cout << "\n========== 不同长度序列准确性测试 (相似度 95%, " << NUM_TESTS << " 次) ==========\n";
-
-        std::vector<size_t> lengths = {100, 500, 1000, 2000, 5000};
-
-        std::cout << std::setw(12) << "长度(bp)"
-                  << std::setw(15) << "KSW2准确率"
-                  << std::setw(15) << "WFA2准确率"
-                  << std::setw(15) << "MM2准确率" << "\n";
-        std::cout << std::string(57, '-') << "\n";
-
-        for (size_t len : lengths) {
-            size_t ksw2_valid = 0, wfa2_valid = 0, mm2_valid = 0;
-
-            for (int i = 0; i < NUM_TESTS; ++i) {
-                std::string ref = generateRandomDNA(len, i * 3);
-                std::string query = mutateSequence(ref, SNP_RATE, INDEL_RATE, i * 3 + 1);
-
-                // 根据长度调整 k 和 w（长序列用更大的 k）
-                std::size_t k = len < 1000 ? 13 : 15;
-                std::size_t w = len < 1000 ? 8 : 10;
-                anchor::Anchors anchors = generateRealAnchors(ref, query, k, w);
-
-                if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
-                if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, SIMILARITY))) wfa2_valid++;
-                if (verifyCigar(ref, query, align::globalAlignMM2(ref, query, anchors))) mm2_valid++;
-            }
-
-            double ksw2_acc = 100.0 * ksw2_valid / NUM_TESTS;
-            double wfa2_acc = 100.0 * wfa2_valid / NUM_TESTS;
-            double mm2_acc = 100.0 * mm2_valid / NUM_TESTS;
-
-            std::cout << std::setw(12) << len
-                      << std::setw(15) << std::fixed << std::setprecision(1) << ksw2_acc << "%"
-                      << std::setw(15) << wfa2_acc << "%"
-                      << std::setw(15) << mm2_acc << "%" << "\n";
-        }
-
-        std::cout << "========================================================\n\n";
-    }
 }
 
 // ------------------------------------------------------------------

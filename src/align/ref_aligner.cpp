@@ -203,8 +203,10 @@ namespace align {
         // ------------------------------------------------------------------
 
         constexpr double kSimilarityThreshold = 0.90;  // 相似度阈值（可调整：0.90-0.98）
+        int len_diff = std::abs(static_cast<int>(ref.size()) - static_cast<int>(query.size()));
+        double coverage = 1.0 - static_cast<double>(len_diff) / std::max(ref.size(), query.size());
 
-        if (similarity >= kSimilarityThreshold) {
+        if (similarity >= kSimilarityThreshold && coverage >= 0.5) {
             return globalAlignWFA2(ref, query);
         } else {
             // ----------------------------------------------------------
@@ -376,7 +378,7 @@ namespace align {
         // - 使用 RefAligner::globalAlign 而非直接调用 globalAlignWFA2
         // - 传递 ref_minimizer 和 query_minimizer，允许未来根据种子信息优化比对
         // - 允许未来根据相似度自动选择最优算法
-        cigar::Cigar_t initial_cigar = RefAligner::globalAlign(
+        cigar::Cigar_t initial_cigar = globalAlign(
             best_ref.seq,
             q.seq,
             best_j,
@@ -403,12 +405,12 @@ namespace align {
 
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
 
-        cigar::Cigar_t recheck_cigar = RefAligner::globalAlign(
+        cigar::Cigar_t recheck_cigar = globalAlign(
             consensus_seq.seq,
             q.seq,
             consensus_similarity,
             &consensus_minimizer,  // 使用预计算的共识序列 minimizer
-            nullptr);
+            &query_minimizer);
 
         // 使用二次比对结果（如果失败则使用初始结果）
         const cigar::Cigar_t& final_cigar = recheck_cigar.empty() ? initial_cigar : recheck_cigar;
