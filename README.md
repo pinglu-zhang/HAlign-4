@@ -1,7 +1,5 @@
 # HAlign-4
 
-
-
 ## Requirements
 
 ### Build tools
@@ -11,9 +9,9 @@
 
 ### Optional dependencies
 
-- OpenMP (required by current CMake)
-- libcurl (optional; if missing, downloads fall back to `curl`/`wget` shell tools at runtime)
-- zlib (optional; enables gz FASTA input reading and compression support)
+- OpenMP (currently REQUIRED by the CMake configuration)
+- libcurl (optional: used for downloading URL inputs; if missing, runtime may fall back to shell tools like `curl`/`wget` depending on your environment)
+- zlib (optional: used for reading `.gz` FASTA)
 
 ---
 
@@ -40,7 +38,7 @@ The produced binary is:
 
 `halign4` requires three mandatory arguments:
 
-- `-i, --input` : input FASTA path (currently checked as an existing file by CLI11)
+- `-i, --input` : input FASTA path (**must exist**; validated by CLI11 and runtime checks)
 - `-o, --output`: output FASTA path
 - `-w, --workdir`: working directory for intermediate files
 
@@ -53,36 +51,52 @@ Example (with the bundled example data):
   -w work
 ```
 
+### Important workdir behavior
+
+In the current implementation, whether a non-empty `workdir` is allowed depends on the build mode (see `checkOption` in `src/halign4.cpp`):
+
+- **Release**: `workdir` must be empty (to avoid overwriting prior results)
+- **Debug**: `workdir` may be non-empty (more convenient for iterative development)
+
 ### Important CLI options
 
 Defined in `include/config.hpp`:
 
 - `-t, --thread <int>`: number of threads (default: hardware concurrency)
-- `--cons-n <int>`: number of longest sequences selected for the consensus/MSA stage (default: 1000)
-- `--kmer-size <int>`: k-mer size for downstream steps (default: 15; constraints 4..31)
+- `--cons-n <int>`: number of sequences selected in preprocess Top-K (by length) (default: 1000)
+- `--kmer-size <int>`: minimizer k-mer size (default: 15; range: 4..31)
 - `--kmer-window <int>`: minimizer window size (default: 10)
-- `--sketch-size <int>`: sketch size (default: 2000)
-- `-c, --center-path <path>`: optional, manually supply a center FASTA record file used for alignment
-- `-p, --msa-cmd <path>`: path to an MSA command template file (see below)
+- `--sketch-size <int>`: Mash/MinHash sketch size (default: 2000)
+- `-c, --center-path <path>`: optional; a center/reference FASTA file path (must exist)
+- `-p, --msa-cmd <path>`: **MSA command template file path** (must exist; note: this is not a raw template string)
 - `--keep-first-length`: keep only the first/center sequence length unchanged
 - `--keep-all-length`: keep all center sequences’ lengths unchanged
 
-### MSA command template
+### MSA command template (`-p/--msa-cmd`)
 
-The default command template is:
+#### 1) Default template
+
+The code ships with a built-in default template (see `DEFALT_MSA_CMD` in `include/config.hpp`):
 
 ```text
 minipoa {input} -S -t {thread} -r1 > {output}
 ```
 
-The tool performs a small self-check by running the template on a tiny FASTA during option validation.
+#### 2) Custom template file
 
-Notes:
+You can pass a **text file path** via `-p/--msa-cmd`. The program will:
 
-- The template **must include** `{input}` and `{output}`.
-- If it includes `{thread}`, it will be replaced by the thread count.
-- The execution uses the system shell (`std::system`), so treat templates as trusted input.
+1. Validate the file exists (CLI11 + `file_io::requireRegularFile`)
+2. Run a template self-check during argument validation (`cmd::testCommandTemplate`)
 
+Template substitution rules:
+
+- `{input}` and `{output}` are required
+- `{thread}` (if present) will be replaced by the thread count
+- Execution uses the system shell (`std::system`), so input should be considered trusted
+
+> Note: Because `-p/--msa-cmd` is validated with `ExistingFile` in the current implementation,
+> you can’t pass a raw string like `"minipoa ..."` directly; you must pass a template **file path**.
 
 ---
 
@@ -90,32 +104,47 @@ Notes:
 
 Unit tests are implemented with **doctest** and built via `test/CMakeLists.txt`.
 
-You can run tests using the helper script:
+### Recommended: use the helper script
 
 ```bash
 cd test
 ./run_tests.sh -t Release -j 8
 ```
 
-Or run CTest directly after configuring `build-test`:
+The script will:
+
+- configure and build `build-test/`
+- run CTest
+- when `--perf` is provided, export `HALIGN4_RUN_PERF=1` (to enable longer perf tests)
+
+Example:
+
+```bash
+cd test
+./run_tests.sh --perf -- -R align
+```
+
+### Run CTest directly
 
 ```bash
 ctest --test-dir build-test -V
 ```
 
-Registered test suites include:
+Registered test suites currently include (see `test/CMakeLists.txt`):
 
 - `consensus`
 - `read_fasta`
 - `minimizer`
 - `mash`
 - `jaccard`
+- `write_fasta`
+- `align`
+- `anchor`
 
 ---
 
-
-
 ## Citation
 
-If you use HAlign-4 in academic work, please consider adding a citation section once a publication/DOI is available.
+If you use HAlign-4 in academic work, please cite:
 
+https://doi.org/10.1093/bioinformatics/btae718
