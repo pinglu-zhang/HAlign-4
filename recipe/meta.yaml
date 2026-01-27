@@ -1,25 +1,39 @@
 package:
   name: halign4
-  version: 1.1.2
+  version: "2.0.0"
 
 source:
-  path: ./HAlign-4
+  git_url: https://github.com/pinglu-zhang/HAlign-4.git
+  # 建议固定 tag/commit，保证可复现
+  # git_rev: v2.0.0
 
-build: 
+build:
   number: 0
+  script: bash build.sh
 
-requirements: 
-  build: 
-    - gcc >=9
-  run: 
-    - gcc >=9
+requirements:
+  build:
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+    - cmake
+    - make
+    - pkg-config
+  host:
+    - zlib
+    - libcurl
+    - llvm-openmp  # 给 find_package(OpenMP) 提供 runtime/headers（Linux 下很稳）
+    - sysroot_linux-64 2.17
+  run:
+    - zlib
+    - libcurl
+    - llvm-openmp
 
 test:
   commands:
     - halign4 -h
 
-about: 
-  home: https://github.com/metaphysicser/HAlign-4
+about:
+  home: https://github.com/pinglu-zhang/HAlign-4
   license: MIT
   summary: "HAlign-4"
   description: "HAlign 4: A New Strategy for Rapidly Aligning Millions of Sequences"

@@ -104,19 +104,20 @@ int main(int argc, char** argv) {
     {
         spdlog::init_thread_pool(8192, 1);
         setupLogger();
-        spdlog::info("Starting halign4...");
 
         Options opt;
         CLI::App app{"halign4"};
+
 
         setupCli(app, opt);
 
         // CLI11 的解析必须在 main 中进行，以便直接处理 argc/argv
         CLI11_PARSE(app, argc, argv);
 
-
         // 解析成功后，opt 已被填充
         logParsedOptions(opt);
+        // 程序启动时打印版本号
+        spdlog::info("Starting halign4 version {}...", VERSION);
 
         // 校验参数（文件存在性、工作目录、msa 模板自检等）
         checkOption(opt);

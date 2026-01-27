@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 project(HAlign4)
 
 set(CMAKE_CXX_STANDARD 20)
+option(HALIGN4_NATIVE_ARCH "Enable -march=native" OFF)
 
 # 如果用户没有指定 CMAKE_BUILD_TYPE，则默认设置为 Release，以便默认开启优化构建
 if(NOT DEFINED CMAKE_BUILD_TYPE)
@@ -94,7 +95,8 @@ else()
     # GCC / Clang: -O3, -march=native, -flto, -pipe
     target_compile_options(halign4 PRIVATE
         $<$<CONFIG:Release>:-O3>
-        $<$<CONFIG:Release>:-march=native>
+            $<$<AND:$<CONFIG:Release>,$<BOOL:${HALIGN4_NATIVE_ARCH}>>:-march=native>
+
     )
 endif()
 

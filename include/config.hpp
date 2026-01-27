@@ -34,7 +34,7 @@
 // ------------------------------------------------------------------
 // 通用配置常量
 // ------------------------------------------------------------------
-#define VERSION "1.2.0"                   // 版本号，程序启动时可打印以便追踪
+#define VERSION "2.0.0"                   // 版本号，程序启动时可打印以便追踪
 #define LOGGER_NAME "logger"              // 默认日志器名称（用于 spdlog 注册）
 #define LOGGER_FILE "halign4.log"         // 默认日志文件名（相对于工作目录）
 #define CONFIG_FILE "config.json"         // 默认配置文件路径（如果将来支持外部配置）
@@ -147,7 +147,10 @@ struct Options {
 // - 对于像 -p/--msa-cmd 这类可能是可执行名（而非完整路径）的参数，ExistingFile 会拒绝仅命令名的情况；
 //   如果希望允许命令名（在 PATH 中解析），可以去掉 check(CLI::ExistingFile) 或改为用户层面的更宽容判断。
 static void setupCli(CLI::App& app, Options& opt) {
-    app.description("HAlign4 / MSA tool");
+    app.description("HAlign 4: A New Strategy for Rapidly Aligning Millions of Sequences");
+
+    // 设置版本标志：--version 打印版本并退出，-h/--help 也会显示版本信息
+    app.set_version_flag("-v,--version", std::string("halign4 version ") + VERSION);
 
    // 必须参数（同时支持短参数和长参数）
     app.add_option("-i,--input", opt.input, "Input sequences (file path)")
