@@ -1,7 +1,5 @@
 # HAlign-4
-
 ## Requirements
-
 ### Build tools
 
 - CMake >= 3.28
