@@ -449,11 +449,11 @@ inline CLI::Validator trim_whitespace = CLI::Validator(
 // ------------------------------------------------------------------
 inline void setupLoggerWithFile(std::filesystem::path log_dir) {
 	auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-	console_sink->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] %v%$");
+	console_sink->set_pattern("%^[%Y-%m-%d %H:%M:%S] [%l] %v%$");
 
 	std::filesystem::path log_file = log_dir / LOGGER_FILE;
 	auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_file.string(), true);
-	file_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
+	file_sink->set_pattern("[%Y-%m-%d %H:%M:%S] [%l] %v");
 
 	spdlog::sinks_init_list sinks = { console_sink, file_sink };
 	auto logger = std::make_shared<spdlog::async_logger>(
