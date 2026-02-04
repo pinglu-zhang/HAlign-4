@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
 
         align::RefAligner ref_aligner(opt, ref_path);
         ref_aligner.alignQueryToRef(opt.input);
-        ref_aligner.mergeAlignedResults(consensus_aligned_file, opt.msa_cmd);
+        ref_aligner.mergeAlignedResults(opt.msa_cmd, 25600);
         // 调用 RefAligner 完成后续的比对与合并工作
 
         FilePath final_output_path = FilePath(opt.workdir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;

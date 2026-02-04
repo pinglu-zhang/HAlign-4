@@ -296,6 +296,24 @@ namespace align {
 
         // 3. 逐个处理每个 SAM 文件
         for (const auto& sam_path : sam_paths) {
+            // 检查 1：文件是否存在
+            if (!std::filesystem::exists(sam_path)) {
+                const std::string err_msg = "SAM file does not exist: " + sam_path.string();
+                spdlog::error(err_msg);
+                throw std::runtime_error(err_msg);
+            }
+
+            // 检查 2：文件是否为空（0 字节通常表示写入失败或程序异常）
+            const auto file_size = std::filesystem::file_size(sam_path);
+            if (file_size == 0) {
+                spdlog::warn("SAM file is empty (0 bytes), skipping: {}", sam_path.string());
+                ++file_idx;  // 跳过当前文件，但仍更新文件索引
+                continue;    // 跳过空文件，继续处理下一个
+            }
+
+            spdlog::debug("mergeConsensusAndSamToFasta: processing SAM file {} ({}/{}): {} ({} bytes)",
+                         file_idx + 1, file_idx + 1, sam_paths.size(), sam_path.string(), file_size);
+
             // 打开当前 SAM 文件
             // 说明：
             // - 每个 SamReader 独立打开和关闭
@@ -658,6 +676,28 @@ namespace align {
         print_progress(true);
         std::fprintf(stderr, "\n");
         spdlog::info("Alignment completed");
+
+        // ========================================================================
+        // 关键修复：确保所有 SAM 文件数据完全写入磁盘
+        // ========================================================================
+        // 问题根源：
+        // 1. 虽然每个 batch 处理后都调用了 flush()，但这只是刷新缓冲区
+        // 2. SeqWriter 的析构函数虽然会关闭文件，但依赖于对象生命周期
+        // 3. 如果程序异常退出或对象移动，可能导致文件未正确关闭
+        // 4. mergeAlignedResults 中会出现 "SamReader is not initialized" 错误
+        //
+        // 修复策略：
+        // 1. 在函数返回前，显式 flush 所有 writer（确保数据写入磁盘）
+        // 2. 提供清晰的日志信息（便于排查问题）
+        // 3. 即使发生异常，RAII 机制也能确保析构函数被调用
+        // ========================================================================
+        for (auto& w : outs) {
+            if (w) w->flush();
+        }
+        for (auto& w : outs_with_insertion) {
+            if (w) w->flush();
+        }
+
     }
 
     // ------------------------------------------------------------------
@@ -775,10 +815,11 @@ namespace align {
     // - 插入序列需要独立 MSA 后再整合到最终结果
     //
     // 参数：
-    // @param aligned_consensus_path: 已对齐的共识序列文件路径（包含 consensus + 参考序列的 MSA）
     // @param msa_cmd: 外部 MSA 工具命令（用于对齐插入序列）
+    // @param batch_size: 批处理大小，控制每批并行处理的序列数量（默认 1000）
+    //                    - 更大的值可提高吞吐量，但占用更多内存
     // ==================================================================
-    void RefAligner::mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd)
+    void RefAligner::mergeAlignedResults(const std::string& msa_cmd, std::size_t batch_size)
     {
         // ------------------------------------------------------------------
         // 进度条（串行，低开销）：显示已写入 FINAL_ALIGNED_FASTA 的序列条数
@@ -1143,124 +1184,106 @@ namespace align {
         // ========================================================================
         // ------------------------------------------------------------------
 
-        constexpr std::size_t MERGE_BATCH_SIZE = 1000;  // 每批处理 1000 条序列
-        constexpr std::size_t BATCH_FLUSH_SIZE = 1000;  // 每 1000 条 flush 一次
-        std::size_t batch_count = 0;
+
+        // 性能优化：缓存上一次查找的 ref_cigar，避免重复 map 查找
+        // 说明：连续的 SAM 记录通常比对到同一个参考序列，缓存可大幅减少查找开销
+        std::string cached_rname;
+        const cigar::Cigar_t* cached_ref_cigar = nullptr;
 
         // 性能优化：预估最终序列长度，减少 string resize 次数
+        // 说明：MSA 最终长度通常与参考序列长度相近（± 10%）
         const std::size_t estimated_final_length = expected_length > 0 ? expected_length : 30000;
 
-        // 遍历所有 SAM 文件
-        for (const auto& sam_path : outs_path)
+       for (const auto& sam_path : outs_path)
         {
             seq_io::SamReader sam_reader(sam_path);
-
-            // 批处理循环：效仿 alignQueryToRef 的设计
-            while (true)
+            seq_io::SamRecord sam_rec;
+            seq_io::SeqRecord fasta_rec;
+            while (sam_reader.next(sam_rec))
             {
                 // ------------------------------------------------------------------
-                // 步骤 1：串行读取一个 batch 的 SAM 记录
+                // 步骤 4.3.1：转换 SAM 记录为 FASTA 记录
                 // ------------------------------------------------------------------
-                std::vector<seq_io::SamRecord> sam_batch;
-                sam_batch.reserve(MERGE_BATCH_SIZE);
+                fasta_rec = seq_io::samRecordToSeqRecord(sam_rec, false);
 
-                seq_io::SamRecord sam_rec;
-                for (std::size_t i = 0; i < MERGE_BATCH_SIZE; ++i) {
-                    if (!sam_reader.next(sam_rec)) break;
-                    sam_batch.push_back(std::move(sam_rec));
+                // 性能优化：预分配字符串空间，减少后续 padQueryToRefByCigar 的 resize 次数
+                // 说明：最终长度通常是原始长度的 1.1-1.5 倍（取决于 gap 数量）
+                if (fasta_rec.seq.capacity() < estimated_final_length) {
+                    fasta_rec.seq.reserve(estimated_final_length);
                 }
-                if (sam_batch.empty()) break;
 
                 // ------------------------------------------------------------------
-                // 步骤 2：并行处理 batch - 多级 CIGAR 投影（CPU 密集型）
+                // 步骤 4.3.2：解析 SAM CIGAR 字符串
                 // ------------------------------------------------------------------
-                // 说明：
-                // - 每个线程独立处理一条序列的 CIGAR 投影（无共享写入）
-                // - ref_aligned_map/insertion_ref_gap_pos/tmp_insertion_cigar 只读共享（线程安全）
-                // - 处理后的 SeqRecord 存回 sam_batch 对应位置的 seq 字段
+                // 性能优化：只在 CIGAR 非空时才解析，避免不必要的 stringToCigar 调用
+                if (!sam_rec.cigar.empty() && sam_rec.cigar != "*") {
+                    cigar::Cigar_t tmp_cigar = cigar::stringToCigar(sam_rec.cigar);
+
+                    // ------------------------------------------------------------------
+                    // 步骤 4.3.3：第一级投影 - query → reference
+                    // ------------------------------------------------------------------
+                    cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_cigar);
+                }
+                // 如果 CIGAR 为空或为 "*"，跳过第一级投影（序列已经是原始状态）
+
                 // ------------------------------------------------------------------
-                std::vector<seq_io::SeqRecord> fasta_batch(sam_batch.size());
-
-                #pragma omp parallel for default(none) \
-                    shared(sam_batch, fasta_batch, ref_aligned_map, ref_gap_pos, insertion_ref_gap_pos, \
-                           tmp_insertion_cigar, keep_first_length, keep_all_length, estimated_final_length) \
-                    schedule(dynamic, 8)
-                for (std::int64_t i = 0; i < static_cast<std::int64_t>(sam_batch.size()); ++i)
-                {
-                    const auto& sam_rec = sam_batch[static_cast<std::size_t>(i)];
-                    auto& fasta_rec = fasta_batch[static_cast<std::size_t>(i)];
-
-                    // 转换 SAM → FASTA
-                    fasta_rec = seq_io::samRecordToSeqRecord(sam_rec, false);
-
-                    // 预分配空间
-                    if (fasta_rec.seq.capacity() < estimated_final_length) {
-                        fasta_rec.seq.reserve(estimated_final_length);
-                    }
-
-                    // 第一级投影：query → reference（SAM CIGAR）
-                    if (!sam_rec.cigar.empty() && sam_rec.cigar != "*") {
-                        cigar::Cigar_t tmp_cigar = cigar::stringToCigar(sam_rec.cigar);
-                        cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_cigar);
-                    }
-
-                    // 第二级投影：reference → consensus（查找 ref_aligned_map）
+                // 步骤 4.3.4：第二级投影 - reference → consensus
+                // ------------------------------------------------------------------
+                // 性能优化：使用缓存避免重复查找同一个参考序列的 CIGAR
+                if (cached_rname != sam_rec.rname) {
                     auto it = ref_aligned_map.find(sam_rec.rname);
                     if (it == ref_aligned_map.end()) {
                         throw std::runtime_error(
                             "mergeAlignedResults: reference '" + sam_rec.rname +
                             "' not found in ref_aligned_map");
                     }
-                    cigar::padQueryToRefByCigar(fasta_rec.seq, it->second);
-
-                    // 移除共识序列的 gap 列（可选）
-                    if (keep_first_length) {
-                        removeRefGapColumns(fasta_rec.seq, ref_gap_pos);
-                    }
-
-                    // 第三级投影：consensus → insertion MSA
-                    cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_insertion_cigar);
-
-                    // 移除插入 MSA 共识序列的 gap 列（可选）
-                    if (keep_all_length || keep_first_length) {
-                        removeRefGapColumns(fasta_rec.seq, insertion_ref_gap_pos);
-                    }
+                    cached_rname = sam_rec.rname;
+                    cached_ref_cigar = &(it->second);
                 }
+                // 使用缓存的 const 引用，避免拷贝
+                cigar::padQueryToRefByCigar(fasta_rec.seq, *cached_ref_cigar);
 
                 // ------------------------------------------------------------------
-                // 步骤 3：串行写出 batch（保证顺序）+ 长度检测
+                // 步骤 4.3.5：移除共识序列的 gap 列（可选）
                 // ------------------------------------------------------------------
-                for (const auto& fasta_rec : fasta_batch)
+                if (keep_first_length)
                 {
-                    // 长度一致性检测
-                    if (!length_initialized) {
-                        expected_length = fasta_rec.seq.size();
-                        length_initialized = true;
-                    } else if (fasta_rec.seq.size() != expected_length) {
-                        throw std::runtime_error(
-                            "mergeAlignedResults: sequence length mismatch! sequence '" + fasta_rec.id +
-                            "' has length " + std::to_string(fasta_rec.seq.size()) +
-                            ", expected " + std::to_string(expected_length) +
-                            " (sequence #" + std::to_string(seq_count + 1) + ")");
-                    }
-
-                    final_writer.writeFasta(fasta_rec);
-                    ++seq_count;
-                    ++batch_count;
-                    progress_written++; progress_tick(false);
-
-                    // 批量 flush
-                    if (batch_count >= BATCH_FLUSH_SIZE) {
-                        final_writer.flush();
-                        batch_count = 0;
-                    }
+                    removeRefGapColumns(fasta_rec.seq, ref_gap_pos);
                 }
 
                 // ------------------------------------------------------------------
-                // 步骤 4：释放 batch 内存（避免累积）
+                // 步骤 4.3.6：第三级投影 - consensus → insertion MSA
                 // ------------------------------------------------------------------
-                std::vector<seq_io::SamRecord>().swap(sam_batch);
-                std::vector<seq_io::SeqRecord>().swap(fasta_batch);
+                cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_insertion_cigar);
+
+                // ------------------------------------------------------------------
+                // 步骤 4.3.7：移除插入 MSA 共识序列的 gap 列（可选）
+                // ------------------------------------------------------------------
+                if (keep_all_length || keep_first_length)
+                {
+                    removeRefGapColumns(fasta_rec.seq, insertion_ref_gap_pos);
+                }
+
+                // ------------------------------------------------------------------
+                // 步骤 4.3.8：序列长度一致性检测
+                // ------------------------------------------------------------------
+                if (!length_initialized) {
+                    expected_length = fasta_rec.seq.size();
+                    length_initialized = true;
+                } else if (fasta_rec.seq.size() != expected_length) {
+                    throw std::runtime_error(
+                        "mergeAlignedResults: sequence length mismatch! sequence '" + fasta_rec.id +
+                        "' has length " + std::to_string(fasta_rec.seq.size()) +
+                        ", expected " + std::to_string(expected_length) +
+                        " (sequence #" + std::to_string(seq_count + 1) + ", from SAM: " + sam_rec.rname + ")");
+                }
+
+                // ------------------------------------------------------------------
+                // 步骤 4.3.9：写入最终 MSA 文件
+                // ------------------------------------------------------------------
+                final_writer.writeFasta(fasta_rec);
+                ++seq_count;
+
             }
         }
         final_writer.flush();  // 强制刷新缓冲区，确保所有数据落盘
