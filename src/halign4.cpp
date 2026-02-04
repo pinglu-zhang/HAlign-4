@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
 
         // 如果输入序列总数小于等于用于生成共识的数量（cons_n），说明我们已在预处理阶段处理完毕。
         // 此时直接把对齐输出拷贝到用户指定的最终输出文件并退出；这是常见的快速路径，避免无谓的合并工作。
-        if (preproc_count <= opt.cons_n)
+        if (preproc_count <= opt.cons_n && opt.keep_first_length == false && opt.keep_all_length == false)
         {
             // 调用外部 MSA （可能是 mafft/clustalo/其他高质量工具），会阻塞直到命令完成
             alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd,  opt.threads);
