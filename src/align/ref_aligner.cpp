@@ -210,7 +210,21 @@ namespace align {
 
         // // 高相似/高覆盖：直接走 WFA2
         if (similarity >= min_similarity && coverage >= min_coverage) {
-            return globalAlignWFA2(ref, query);
+            cigar::Cigar_t result = globalAlignWFA2(ref, query);
+
+#ifdef _DEBUG
+            // Debug 校验：CIGAR 必须消耗完整的 ref 和 query 长度
+            const std::size_t cigar_ref_len = cigar::getRefLength(result);
+            const std::size_t cigar_qry_len = cigar::getQueryLength(result);
+            if (cigar_ref_len != ref.size() || cigar_qry_len != query.size()) {
+                spdlog::debug("RefAligner::globalAlign [WFA2路径]: CIGAR长度不匹配!");
+                spdlog::debug("  ref长度: {}, CIGAR消耗ref: {}", ref.size(), cigar_ref_len);
+                spdlog::debug("  query长度: {}, CIGAR消耗query: {}", query.size(), cigar_qry_len);
+                spdlog::debug("  相似度: {:.3f}, 覆盖度: {:.3f}", similarity, coverage);
+                spdlog::debug("  CIGAR: {}", cigar::cigarToString(result));
+            }
+#endif
+            return result;
         }
 
         // ------------------------------------------------------------------
@@ -241,10 +255,27 @@ namespace align {
 
 
         // // 原逻辑：相似度稍高用 WFA2 分段，否则用 KSW2 分段
+        cigar::Cigar_t result;
         if (similarity >= min_similarity) {
-            return globalAlignMM2(ref, query, anchors, globalAlignWFA2);
+            result = globalAlignMM2(ref, query, anchors, globalAlignWFA2);
+        } else {
+            result = globalAlignMM2(ref, query, anchors, globalAlignKSW2);
         }
-        return globalAlignMM2(ref, query, anchors, globalAlignKSW2);
+
+#ifdef _DEBUG
+        // Debug 校验：CIGAR 必须消耗完整的 ref 和 query 长度
+        const std::size_t cigar_ref_len = cigar::getRefLength(result);
+        const std::size_t cigar_qry_len = cigar::getQueryLength(result);
+        if (cigar_ref_len != ref.size() || cigar_qry_len != query.size()) {
+            spdlog::debug("RefAligner::globalAlign [MM2路径]: CIGAR长度不匹配!");
+            spdlog::debug("  ref长度: {}, CIGAR消耗ref: {}", ref.size(), cigar_ref_len);
+            spdlog::debug("  query长度: {}, CIGAR消耗query: {}", query.size(), cigar_qry_len);
+            spdlog::debug("  相似度: {:.3f}, 覆盖度: {:.3f}", similarity, coverage);
+            spdlog::debug("  锚点数量: {}", anchors.size());
+            spdlog::debug("  CIGAR: {}", cigar::cigarToString(result));
+        }
+#endif
+        return result;
     }
 
 
