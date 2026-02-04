@@ -209,9 +209,9 @@ namespace align {
         const double coverage = (denom > 0.0) ? (1.0 - static_cast<double>(len_diff) / denom) : 0.0;
 
         // // 高相似/高覆盖：直接走 WFA2
-        // if (similarity >= min_similarity && coverage >= min_coverage) {
-        //     return globalAlignWFA2(ref, query);
-        // }
+        if (similarity >= min_similarity && coverage >= min_coverage) {
+            return globalAlignWFA2(ref, query);
+        }
 
         // ------------------------------------------------------------------
         // 低相似/低覆盖：走 MM2（minimap2 风格 anchors + 分段全局比对）
@@ -241,9 +241,9 @@ namespace align {
 
 
         // // 原逻辑：相似度稍高用 WFA2 分段，否则用 KSW2 分段
-        // if (similarity >= min_similarity) {
-        //     return globalAlignMM2(ref, query, anchors, globalAlignWFA2);
-        // }
+        if (similarity >= min_similarity) {
+            return globalAlignMM2(ref, query, anchors, globalAlignWFA2);
+        }
         return globalAlignMM2(ref, query, anchors, globalAlignKSW2);
     }
 
