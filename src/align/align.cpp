@@ -468,16 +468,16 @@ cigar::Cigar_t globalAlignMM2(const std::string& ref,
             // - 同时避免不必要的内存分配与库调用开销。
             // ------------------------------------------------------------------
             cigar::Cigar_t seg_cigar;
-            if (seg_ref.empty() && seg_qry.empty()) {
-                // nothing
-            } else if (seg_ref.empty()) {
-                seg_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry.size())));
-            } else if (seg_qry.empty()) {
-                seg_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref.size())));
-            } else {
-                seg_cigar = align_func(seg_ref, seg_qry);
-            }
-
+            // if (seg_ref.empty() && seg_qry.empty()) {
+            //     // nothing
+            // } else if (seg_ref.empty()) {
+            //     seg_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry.size())));
+            // } else if (seg_qry.empty()) {
+            //     seg_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref.size())));
+            // } else {
+            //     seg_cigar = align_func(seg_ref, seg_qry);
+            // }
+            seg_cigar = align_func(seg_ref, seg_qry);
             // 严格校验本段 CIGAR 覆盖长度
             const std::size_t seg_ref_len = seg_ref.size();
             const std::size_t seg_qry_len = seg_qry.size();
