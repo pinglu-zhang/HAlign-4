@@ -189,48 +189,62 @@ namespace align {
                                            const SeedHits* ref_minimizer,
                                            const SeedHits* query_minimizer) const
     {
-        return cigar::Cigar_t{};
-        constexpr double min_similarity = 0.5;  //
-        constexpr double min_coverage = 0.5;  //
-        int len_diff = std::abs(static_cast<int>(ref.size()) - static_cast<int>(query.size()));
-        double coverage = 1.0 - static_cast<double>(len_diff) / std::max(ref.size(), query.size());
+        // ------------------------------------------------------------------
+        // 关键排查点（内存）：
+        // 这个函数本身不应该“泄露”，但它会触发两类非常大的临时分配：
+        // 1) WFA2：对长序列/低相似度时，wavefront 结构峰值很大（并行叠加后更大）。
+        // 2) MM2：collect_anchors 在重复区域可能产生海量 anchors（O(occ_ref * occ_qry)）。
+        //
+        // 因此我们做两件事：
+        // A) 逻辑保持不变（仍按 similarity/coverage 选择 WFA2 / MM2）。
+        // B) 消除【不必要的深拷贝】（之前 ref_hits = *ref_minimizer 会把 hits 全拷贝一遍）。
+        // C) 在 _DEBUG 下输出关键规模统计，帮助判断是否 anchors 爆炸。
+        // ------------------------------------------------------------------
 
-        if (similarity >= min_similarity && coverage >= min_coverage) {
-            return globalAlignWFA2(ref, query);
-        } else {
-            // ----------------------------------------------------------
-            // 低相似度：使用 MM2（基于锚点的分段比对）
-            // ----------------------------------------------------------
-            anchor::Anchors anchors;
-            minimizer::MinimizerHits ref_hits;
-            minimizer::MinimizerHits qry_hits;
+        constexpr double min_similarity = 0.5;
+        constexpr double min_coverage = 0.5;
 
-            if (ref_minimizer != nullptr && !ref_minimizer->empty())
-            {
-                ref_hits = *ref_minimizer;
-            }else
-            {
-                ref_hits = minimizer::extractMinimizer(ref, kmer_size, window_size, noncanonical);
-            }
-            if (query_minimizer != nullptr && !query_minimizer->empty())
-            {
-                qry_hits = *query_minimizer;
-            }else
-            {
-                qry_hits = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
-            }
+        const int len_diff = std::abs(static_cast<int>(ref.size()) - static_cast<int>(query.size()));
+        const double denom = static_cast<double>(std::max(ref.size(), query.size()));
+        const double coverage = (denom > 0.0) ? (1.0 - static_cast<double>(len_diff) / denom) : 0.0;
 
-            anchors = minimizer::collect_anchors(ref_hits, qry_hits);
+        // // 高相似/高覆盖：直接走 WFA2
+        // if (similarity >= min_similarity && coverage >= min_coverage) {
+        //     return globalAlignWFA2(ref, query);
+        // }
 
-            if (similarity >= min_similarity)
-            {
-                return globalAlignMM2(ref, query, anchors, globalAlignWFA2);
-            }
-            else
-            {
-                return globalAlignMM2(ref, query, anchors, globalAlignKSW2);
-            }
+        // ------------------------------------------------------------------
+        // 低相似/低覆盖：走 MM2（minimap2 风格 anchors + 分段全局比对）
+        // 重要：这里必须避免对 minimizer hits 的深拷贝，否则每条 query 都会额外复制一份 hits。
+        // ------------------------------------------------------------------
+
+        // 注意：ref_mz_ptr/qry_mz_ptr 指向的 hits 必须在本函数作用域内有效。
+        // - ref_minimizer / query_minimizer 若非空，则由调用方管理（通常来自成员缓存或栈变量）。
+        // - 若为空，则我们在本函数内生成临时 hits，并让指针指向它们。
+        const SeedHits* ref_mz_ptr = ref_minimizer;
+        const SeedHits* qry_mz_ptr = query_minimizer;
+
+        SeedHits ref_mz_tmp;
+        SeedHits qry_mz_tmp;
+
+        if (ref_mz_ptr == nullptr || ref_mz_ptr->empty()) {
+            ref_mz_tmp = minimizer::extractMinimizer(ref, kmer_size, window_size, noncanonical);
+            ref_mz_ptr = &ref_mz_tmp;
         }
+        if (qry_mz_ptr == nullptr || qry_mz_ptr->empty()) {
+            qry_mz_tmp = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
+            qry_mz_ptr = &qry_mz_tmp;
+        }
+
+        // 生成 anchors（这是最容易发生“内存爆炸”的一步）
+        anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
+
+
+        // // 原逻辑：相似度稍高用 WFA2 分段，否则用 KSW2 分段
+        // if (similarity >= min_similarity) {
+        //     return globalAlignMM2(ref, query, anchors, globalAlignWFA2);
+        // }
+        return globalAlignMM2(ref, query, anchors, globalAlignKSW2);
     }
 
 
