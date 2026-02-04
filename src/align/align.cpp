@@ -51,10 +51,10 @@ namespace align
             cigar::Cigar_t cigar;
             if (ref.size() == 0 && query.size() > 0) {
                 // ref 为空，query 全部插入
-                cigar.push_back(cigar::cigarToInt(static_cast<uint32_t>(query.size()), 'I'));
+                cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(query.size())));
             } else if (query.size() == 0 && ref.size() > 0) {
                 // query 为空，ref 全部删除
-                cigar.push_back(cigar::cigarToInt(static_cast<uint32_t>(ref.size()), 'D'));
+                cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(ref.size())));
             }
             return cigar;
         }
