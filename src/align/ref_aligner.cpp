@@ -189,7 +189,7 @@ namespace align {
                                            const SeedHits* ref_minimizer,
                                            const SeedHits* query_minimizer) const
     {
-
+        return cigar::Cigar_t{};
         constexpr double min_similarity = 0.5;  //
         constexpr double min_coverage = 0.5;  //
         int len_diff = std::abs(static_cast<int>(ref.size()) - static_cast<int>(query.size()));
