@@ -46,6 +46,18 @@ namespace align
     // ------------------------------------------------------------------
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query)
     {
+        if (ref.size() == 0 || query.size() == 0) {
+            // 特殊情况：任一序列为空，返回全删/全插 CIGAR
+            cigar::Cigar_t cigar;
+            if (ref.size() == 0 && query.size() > 0) {
+                // ref 为空，query 全部插入
+                cigar.push_back(cigar::cigarToInt(static_cast<uint32_t>(query.size()), 'I'));
+            } else if (query.size() == 0 && ref.size() > 0) {
+                // query 为空，ref 全部删除
+                cigar.push_back(cigar::cigarToInt(static_cast<uint32_t>(ref.size()), 'D'));
+            }
+            return cigar;
+        }
         /* ---------- 1. 编码序列 ---------- */
         // 说明：KSW2 期望输入为整数编码序列。
         // ScoreChar2Idx 的映射规则见 align.h：A/C/G/T -> 0..3，其它 -> 4(N)
