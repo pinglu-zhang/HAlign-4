@@ -14,7 +14,8 @@
 #include <cstring> // for memcmp
 #include "hash.h"
 #include "robin_hood.h"
-
+#include <unordered_map>
+#include <unordered_set>
 namespace mash
 {
     // clamp01: 将 double 值限制在 [0,1] 范围内的辅助函数
@@ -62,7 +63,7 @@ namespace mash
         // seen：用于去重，避免同一个 hash 重复进入 heap 造成 bias。
         // 这里用 robin_hood::unordered_set（通常比 std::unordered_set 更快、内存更紧凑）。
         // reserve *2：降低 rehash 次数。
-        robin_hood::unordered_set<hash_t> seen;
+        std::unordered_set<hash_t> seen;
         seen.reserve(sketch_size * 2 + 1);
 
         // 主循环：对序列做 rolling，生成每个位置的 k-mer（正向/反向互补），然后计算 hash。
@@ -86,7 +87,10 @@ namespace mash
 
             // valid 计数不足 k 时，还不能形成完整 k-mer。
             if (valid < k) ++valid;
-            if (valid < k) continue;
+            if (valid < k)
+            {
+                continue;
+            }
 
             // canonical 选择：
             // - noncanonical=true ：只取正向
@@ -98,7 +102,10 @@ namespace mash
             const hash_t h = getHash2bit(code, static_cast<std::uint32_t>(seed));
 
             // 去重：如果之前见过这个 hash，则跳过。
-            if (!seen.insert(h).second) continue;
+            if (!seen.insert(h).second)
+            {
+                continue;
+            }
 
             if (maxHeap.size() < sketch_size)
             {
