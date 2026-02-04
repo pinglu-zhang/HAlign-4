@@ -44,17 +44,44 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     file_io::ensureDirectoryExists(clean_data_dir);
     spdlog::info("Ensured clean data directory exists: {}", clean_data_dir.string());
 
-    // ---------- 获取输入文件（支持本地/远程） ----------
-    // 4) 将输入文件复制或下载到 raw_data 下。
-    //    这里调用 file_io::fetchFile，函数内部会判断是 URL 还是本地路径并做相应操作（download 或 copy）。
+    // ========================================================================
+    // 获取输入文件（支持本地/远程，性能优化）
+    // ========================================================================
+    // 核心优化：
+    // - 远程文件（URL）：下载到 raw_data 目录（需要本地缓存）
+    // - 本地文件：直接读取原始路径（避免不必要的复制开销）
+    //
+    // 性能影响：
+    // - 本地大文件（例如 10GB FASTA）：从数分钟复制时间减少到 0 秒
+    // - 远程文件：保持原有逻辑（必须下载到本地）
+    // - 内存占用：无影响（都是流式读取）
+    // ========================================================================
     FilePath input_file = FilePath(input_path);
-    FilePath raw_dest_file = raw_data_dir / input_file.filename();
+    FilePath actual_input_file;  // 实际读取的文件路径
 
-    spdlog::info("Fetching input to working raw path: {} -> {}", input_file.string(), raw_dest_file.string());
-    // 说明：fetchFile 在遇到远程 URL 时会调用 downloadFile 将数据写入本地；在本地路径时会调用 copyFile（包含跨设备回退等逻辑）。
-    // 这里可能抛异常（例如网络错误、权限问题），调用方应在上层捕获并处理。预处理阶段假定 fetchFile 成功。
-    file_io::fetchFile(input_file,raw_dest_file);
-    spdlog::info("Input available at: {}", raw_dest_file.string());
+    if (file_io::isUrl(input_file)) {
+        // 远程文件：下载到 raw_data 目录
+        FilePath raw_dest_file = raw_data_dir / input_file.filename();
+
+        spdlog::info("Detected remote URL, downloading to: {} -> {}",
+                     input_file.string(), raw_dest_file.string());
+
+        // fetchFile 内部会调用 downloadFile
+        file_io::fetchFile(input_file, raw_dest_file);
+
+        spdlog::info("Download completed: {}", raw_dest_file.string());
+        actual_input_file = raw_dest_file;
+    } else {
+        // 本地文件：直接使用原始路径，不复制
+        spdlog::info("Detected local file, reading directly from: {}", input_file.string());
+
+        // 验证文件存在性与可读性（失败时抛出异常）
+        file_io::requireRegularFile(input_file, "input file");
+
+        actual_input_file = input_file;
+
+        spdlog::info("Local file verified, no copy needed (performance optimization)");
+    }
 
     // ---------- 准备输出文件名 ----------
     // 5) 打开 raw 文件并逐条读取；对每条序列进行清洗（cleanSequence），写入 clean_data
@@ -75,7 +102,11 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     // ---------- 打开 reader/writer 与 TopK 选择器 ----------
     // seq_io::openKseqReader 返回一个 reader 指针（抽象），用于逐条读取序列；
     // seq_io::SeqWriter 用于把清洗后的序列写入到目标文件。
-    auto reader = seq_io::openKseqReader(raw_dest_file);
+    //
+    // 说明：actual_input_file 可能是：
+    // 1. 远程文件：raw_data 目录下的下载文件
+    // 2. 本地文件：用户提供的原始路径（无需复制，性能优化）
+    auto reader = seq_io::openKseqReader(actual_input_file);
     seq_io::SeqWriter clean_writer(clean_dest_file);
     TopKLongestSelector selector(cons_n);
 
