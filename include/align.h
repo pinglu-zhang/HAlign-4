@@ -14,7 +14,7 @@
 #include "utils.h"
 #include "mash.h"
 #include "seed.h"
-
+#include  "ksw2.h"
 #include <unordered_map>
 #include <filesystem>
 #include <string>
@@ -345,100 +345,6 @@ namespace align {
         4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4   // 240-255
     };
 
-    // ==================================================================
-    // KSW2AlignConfig：KSW2 比对算法的配置结构体
-    // ==================================================================
-    // 说明：
-    // KSW2 是一个高性能的序列比对算法（SSE/AVX 加速），支持全局、局部和延伸比对
-    // 本结构体封装了 KSW2 所需的所有参数
-    //
-    // 参数详解：
-    // ------------------------------------------------------------------
-    // 1. mat（替换矩阵）：
-    //    - 类型：const int8_t* 指向一维数组（大小 alphabet_size^2）
-    //    - 格式：一维展开的二维矩阵，mat[i*alphabet_size+j] 对应 mat[i][j]
-    //    - 用途：评分 query[i] 与 ref[j] 的匹配/错配代价
-    //    - 示例：dna5_simd_mat（5x5 矩阵，A/C/G/T/N）
-    //
-    // 2. alphabet_size（字母表大小）：
-    //    - DNA 通常为 5（A/C/G/T/N）
-    //    - 蛋白质为 20+1（20 种氨基酸 + 未知）
-    //
-    // 3. gap_open（gap 开启惩罚）：
-    //    - 正整数，值越大越不倾向于引入新的 gap
-    //    - 建议范围：4-10（DNA）、8-12（蛋白质）
-    //    - 示例：gap_open=6 表示开启一个新 gap 的代价为 6 分
-    //
-    // 4. gap_extend（gap 延伸惩罚）：
-    //    - 正整数，值越大越不倾向于延长现有 gap
-    //    - 通常 gap_extend < gap_open（倾向于少量长 gap 而非多个短 gap）
-    //    - 建议范围：1-3（DNA）、1-2（蛋白质）
-    //    - 示例：gap_extend=2 表示延长 gap 每多 1bp 代价增加 2 分
-    //
-    // 5. end_bonus（末端奖励分）：
-    //    - 用于局部比对或延伸比对，奖励到达序列末端
-    //    - 全局比对通常设为 0
-    //    - 局部比对可设为正值（如 5），鼓励比对延伸到序列末端
-    //
-    // 6. zdrop（Z-drop 剪枝参数）：
-    //    - 默认值：100
-    //    - 用于延伸比对（extension alignment）
-    //    - 当比对得分下降超过 zdrop 时停止延伸（剪枝策略）
-    //    - 值越大，比对越完整但计算越慢；值越小，速度越快但可能过早终止
-    //
-    // 7. band_width（带宽）：
-    //    - 默认值：-1（表示使用全矩阵，无带宽限制）
-    //    - 正值：限制 DP 矩阵的对角带宽度（加速长序列比对）
-    //    - 建议：对于高相似度序列（如同源基因），可设为序列长度的 10%-20%
-    //    - 示例：band_width=100 表示只计算对角线附近 ±100 的区域
-    //
-    // 8. flag（比对模式标志位）：
-    //    - 默认值：0（使用完整替换矩阵）
-    //    - 常用标志（按位或组合）：
-    //        * 0：全局比对，使用完整替换矩阵（默认）
-    //        * KSW_EZ_SCORE_ONLY：只计算得分，不生成 CIGAR
-    //        * KSW_EZ_RIGHT：右对齐模式（用于延伸比对）
-    //        * KSW_EZ_GENERIC_SC：必须设置此标志才能使用自定义替换矩阵
-    //        * KSW_EZ_APPROX_MAX：近似最大得分（加速）
-    //    - 注意：使用 dna5_simd_mat 时必须包含 KSW_EZ_GENERIC_SC 标志
-    //
-    // 使用示例：
-    // ------------------------------------------------------------------
-    // // 全局比对配置（DNA，5x5 矩阵）
-    // KSW2AlignConfig cfg_global = {
-    //     .mat = dna5_simd_mat,
-    //     .alphabet_size = 5,
-    //     .gap_open = 6,
-    //     .gap_extend = 2,
-    //     .end_bonus = 0,
-    //     .zdrop = 100,
-    //     .band_width = -1,  // 全矩阵
-    //     .flag = KSW_EZ_GENERIC_SC
-    // };
-    //
-    // // 延伸比对配置（带宽限制，高 zdrop）
-    // KSW2AlignConfig cfg_extend = {
-    //     .mat = dna5_simd_mat,
-    //     .alphabet_size = 5,
-    //     .gap_open = 6,
-    //     .gap_extend = 2,
-    //     .end_bonus = 5,       // 奖励到达末端
-    //     .zdrop = 200,          // 更宽容的剪枝
-    //     .band_width = 100,     // 限制带宽加速
-    //     .flag = KSW_EZ_GENERIC_SC | KSW_EZ_RIGHT
-    // };
-    // ==================================================================
-    struct KSW2AlignConfig {
-        const int8_t* mat;                  // 一维替换矩阵 (flattened 5x5)
-        int alphabet_size;                 // 通常为 5
-        int gap_open;                      // gap open penalty (positive)
-        int gap_extend;                    // gap extend penalty (positive)
-        int end_bonus;                     // 末端奖励分
-        int zdrop = 100;                   // Z-drop 剪枝参数
-        int band_width = -1;               // -1 表示全矩阵
-        int flag = 0;      // 默认使用全替换矩阵
-    };
-
     // ------------------------------------------------------------------
     // DNA5 替换矩阵（编译期常量，用于 KSW2 全局/延伸比对）
     // ------------------------------------------------------------------
@@ -459,12 +365,33 @@ namespace align {
     // ------------------------------------------------------------------
     static constexpr int8_t dna5_simd_mat[25] = {
         // A   C   G   T   N
-           5, -4, -4, -4,  0,  // A (i=0)
-          -4,  5, -4, -4,  0,  // C (i=1)
-          -4, -4,  5, -4,  0,  // G (i=2)
-          -4, -4, -4,  5,  0,  // T (i=3)
-           0,  0,  0,  0,  0   // N (i=4)
+        5, -4, -4, -4,  0,  // A (i=0)
+       -4,  5, -4, -4,  0,  // C (i=1)
+       -4, -4,  5, -4,  0,  // G (i=2)
+       -4, -4, -4,  5,  0,  // T (i=3)
+        0,  0,  0,  0,  0   // N (i=4)
+ };
+
+    // ==================================================================
+    // KSW2AlignConfig：KSW2 比对算法的配置结构体
+    // ==================================================================
+    // 说明：
+    // KSW2 是一个高性能的序列比对算法（SSE/AVX 加速），支持全局、局部和延伸比对
+    // 本结构体封装了 KSW2 所需的所有参数
+    //
+    // ==================================================================
+    struct KSW2AlignConfig {
+        const int8_t* mat = dna5_simd_mat;                  // 一维替换矩阵 (flattened 5x5)
+        int alphabet_size = 5;                 // 通常为 5
+        int gap_open = 6;                      // gap open penalty (positive)
+        int gap_extend = 2;                    // gap extend penalty (positive)
+        int end_bonus = 0;                     // 末端奖励分
+        int zdrop = -1;                   // Z-drop 剪枝参数
+        int band_width = -1;               // -1 表示全矩阵
+        int flag = KSW_EZ_GENERIC_SC | KSW_EZ_RIGHT;      // 默认使用全替换矩阵
     };
+
+
 
  //    static constexpr int8_t dna5_simd_mat[25] = {
  //        // A   C   G   T   N
@@ -568,6 +495,8 @@ namespace align {
     // ------------------------------------------------------------------
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query);
 
+    cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query, align::KSW2AlignConfig cfg);
+
     // ------------------------------------------------------------------
     // 函数：extendAlignKSW2 - KSW2 延伸比对
     // ------------------------------------------------------------------
@@ -657,8 +586,7 @@ namespace align {
     // ------------------------------------------------------------------
     cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,
-                                  const anchor::Anchors& anchors,
-                                  AlignFunc align_func = nullptr);
+                                  const anchor::Anchors& anchors);
 
     // ==================================================================
     // RefAligner 类：高性能参考序列比对器（多序列比对 MSA 引擎）

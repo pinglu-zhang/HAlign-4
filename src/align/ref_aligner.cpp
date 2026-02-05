@@ -145,43 +145,6 @@ namespace align {
     // ==================================================================
     // 功能：
     // 根据两个序列的相似度自动选择合适的比对算法执行全局比对
-    //
-    // 当前实现：
-    // - 直接使用 WFA2 算法（globalAlignWFA2）
-    // - 暂时忽略 similarity、ref_minimizer、query_minimizer 参数（预留未来扩展）
-    //
-    // 未来扩展方向：
-    // 可根据 similarity 选择最优算法：
-    // - similarity > 0.90：优先使用 WFA2（对高相似度序列速度快）
-    // - 0.70 < similarity <= 0.90：使用 KSW2 延伸比对
-    // - similarity <= 0.70：使用 KSW2 全局比对（更稳健）
-    //
-    // 可利用 minimizer 信息优化比对：
-    // - 对于长序列（>10kb），可先通过 minimizer 找到锚点
-    // - 在锚点之间分段比对，减少计算量
-    // - 根据 minimizer 密度调整比对策略
-    //
-    // 参数：
-    //   @param ref - 参考序列（A/C/G/T/N，大小写不敏感）
-    //   @param query - 查询序列（A/C/G/T/N，大小写不敏感）
-    //   @param similarity - 序列相似度（0.0 到 1.0）
-    //                       当前版本未使用，保留接口兼容性
-    //   @param ref_minimizer - 参考序列的 minimizer 索引（可选）
-    //                          当前版本未使用，保留接口用于未来优化
-    //   @param query_minimizer - 查询序列的 minimizer 索引（可选）
-    //                            当前版本未使用，保留接口用于未来优化
-    //
-    // 返回：
-    //   CIGAR 操作序列（cigar::Cigar_t），描述 query 如何比对到 ref
-    //
-    // 性能说明：
-    // - WFA2 对高相似度序列（编辑距离小）通常显著快于传统 DP 算法
-    // - 时间复杂度：O(s * N)，s 为编辑距离，N 为序列长度
-    // - 对于低相似度序列，WFA2 可能不如 KSW2（未来可优化）
-    //
-    // 使用示例：
-    //   double jaccard = mash::jaccard(sketch1, sketch2);
-    //   auto cigar = RefAligner::globalAlign(ref_seq, query_seq, jaccard, &ref_mz, &query_mz);
     // ==================================================================
     cigar::Cigar_t RefAligner::globalAlign(const std::string& ref,
                                            const std::string& query,
@@ -189,52 +152,6 @@ namespace align {
                                            const SeedHits* ref_minimizer,
                                            const SeedHits* query_minimizer) const
     {
-        // ------------------------------------------------------------------
-        // 关键排查点（内存）：
-        // 这个函数本身不应该“泄露”，但它会触发两类非常大的临时分配：
-        // 1) WFA2：对长序列/低相似度时，wavefront 结构峰值很大（并行叠加后更大）。
-        // 2) MM2：collect_anchors 在重复区域可能产生海量 anchors（O(occ_ref * occ_qry)）。
-        //
-        // 因此我们做两件事：
-        // A) 逻辑保持不变（仍按 similarity/coverage 选择 WFA2 / MM2）。
-        // B) 消除【不必要的深拷贝】（之前 ref_hits = *ref_minimizer 会把 hits 全拷贝一遍）。
-        // C) 在 _DEBUG 下输出关键规模统计，帮助判断是否 anchors 爆炸。
-        // ------------------------------------------------------------------
-
-        constexpr double min_similarity = 0.5;
-        constexpr double min_coverage = 0.5;
-
-        const int len_diff = std::abs(static_cast<int>(ref.size()) - static_cast<int>(query.size()));
-        const double denom = static_cast<double>(std::max(ref.size(), query.size()));
-        const double coverage = (denom > 0.0) ? (1.0 - static_cast<double>(len_diff) / denom) : 0.0;
-// TODO 后续再测试wfa的效果
-//         // // 高相似/高覆盖：直接走 WFA2
-//         if (similarity >= min_similarity && coverage >= min_coverage) {
-//             cigar::Cigar_t result = globalAlignWFA2(ref, query);
-//
-// #ifdef _DEBUG
-//             // Debug 校验：CIGAR 必须消耗完整的 ref 和 query 长度
-//             const std::size_t cigar_ref_len = cigar::getRefLength(result);
-//             const std::size_t cigar_qry_len = cigar::getQueryLength(result);
-//             if (cigar_ref_len != ref.size() || cigar_qry_len != query.size()) {
-//                 spdlog::debug("RefAligner::globalAlign [WFA2路径]: CIGAR长度不匹配!");
-//                 spdlog::debug("  ref长度: {}, CIGAR消耗ref: {}", ref.size(), cigar_ref_len);
-//                 spdlog::debug("  query长度: {}, CIGAR消耗query: {}", query.size(), cigar_qry_len);
-//                 spdlog::debug("  相似度: {:.3f}, 覆盖度: {:.3f}", similarity, coverage);
-//                 spdlog::debug("  CIGAR: {}", cigar::cigarToString(result));
-//             }
-// #endif
-//             return result;
-//         }
-
-        // ------------------------------------------------------------------
-        // 低相似/低覆盖：走 MM2（minimap2 风格 anchors + 分段全局比对）
-        // 重要：这里必须避免对 minimizer hits 的深拷贝，否则每条 query 都会额外复制一份 hits。
-        // ------------------------------------------------------------------
-
-        // 注意：ref_mz_ptr/qry_mz_ptr 指向的 hits 必须在本函数作用域内有效。
-        // - ref_minimizer / query_minimizer 若非空，则由调用方管理（通常来自成员缓存或栈变量）。
-        // - 若为空，则我们在本函数内生成临时 hits，并让指针指向它们。
         const SeedHits* ref_mz_ptr = ref_minimizer;
         const SeedHits* qry_mz_ptr = query_minimizer;
 
@@ -253,14 +170,10 @@ namespace align {
         // 生成 anchors（这是最容易发生“内存爆炸”的一步）
         anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
 
-
         // // 原逻辑：相似度稍高用 WFA2 分段，否则用 KSW2 分段
         cigar::Cigar_t result;
-        if (similarity >= min_similarity) {
-            result = globalAlignMM2(ref, query, anchors, globalAlignKSW2);
-        } else {
-            result = globalAlignMM2(ref, query, anchors, globalAlignKSW2);
-        }
+        result = globalAlignMM2(ref, query, anchors);
+
 
 #ifdef _DEBUG
         // Debug 校验：CIGAR 必须消耗完整的 ref 和 query 长度
@@ -270,7 +183,6 @@ namespace align {
             spdlog::debug("RefAligner::globalAlign [MM2路径]: CIGAR长度不匹配!");
             spdlog::debug("  ref长度: {}, CIGAR消耗ref: {}", ref.size(), cigar_ref_len);
             spdlog::debug("  query长度: {}, CIGAR消耗query: {}", query.size(), cigar_qry_len);
-            spdlog::debug("  相似度: {:.3f}, 覆盖度: {:.3f}", similarity, coverage);
             spdlog::debug("  锚点数量: {}", anchors.size());
             spdlog::debug("  CIGAR: {}", cigar::cigarToString(result));
         }
