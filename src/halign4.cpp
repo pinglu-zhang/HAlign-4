@@ -215,12 +215,12 @@ int main(int argc, char** argv) {
 
         align::RefAligner ref_aligner(opt, ref_path);
         ref_aligner.alignQueryToRef(opt.input);
-        ref_aligner.mergeAlignedResults(opt.msa_cmd, 25600);
+        ref_aligner.mergeAlignedResults(opt.output, opt.msa_cmd, 25600);
         // 调用 RefAligner 完成后续的比对与合并工作
 
-        FilePath final_output_path = FilePath(opt.workdir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
-        file_io::copyFile(final_output_path, FilePath(opt.output));
-        spdlog::info("Final aligned output written to {}", opt.output);
+        // FilePath final_output_path = FilePath(opt.workdir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
+        // file_io::copyFile(final_output_path, FilePath(opt.output));
+        // spdlog::info("Final aligned output written to {}", opt.output);
 
         // 成功完成后，根据 --save-workdir 决定是否清理 workdir
         cleanupWorkdir(opt);

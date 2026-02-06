@@ -766,7 +766,7 @@ namespace align {
         //   - 串行写出处理后的序列（保证顺序，避免写竞争）
         //   - 长序列（30kb）的多级投影并行化后，吞吐可提升 5-10x
         // ------------------------------------------------------------------
-        void mergeAlignedResults(const std::string& msa_cmd, std::size_t batch_size = 25600);
+        void mergeAlignedResults(const FilePath output, const std::string& msa_cmd, std::size_t batch_size = 25600);
 
         // ------------------------------------------------------------------
         // globalAlign - 全局序列比对（统一接口）

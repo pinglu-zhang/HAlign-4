@@ -762,7 +762,7 @@ namespace align {
     // @param batch_size: 批处理大小，控制每批并行处理的序列数量（默认 1000）
     //                    - 更大的值可提高吞吐量，但占用更多内存
     // ==================================================================
-    void RefAligner::mergeAlignedResults(const std::string& msa_cmd, std::size_t batch_size)
+    void RefAligner::mergeAlignedResults(const FilePath output, const std::string& msa_cmd, std::size_t batch_size)
     {
         // ------------------------------------------------------------------
         // 进度条（使用 ProgressBar 类，减少代码冗余）
@@ -907,7 +907,7 @@ namespace align {
 
         parseAlignedReferencesToCigar(aligned_insertion_fasta, insertion_aligned_map, insertion_ref_gap_pos);
 
-        if (keep_all_length)
+        if (!keep_first_length)
         {
             ref_aligned_map[consensus_seq.id] = insertion_aligned_map[consensus_seq.id];
         }
@@ -919,7 +919,8 @@ namespace align {
         // ------------------------------------------------------------------
         // 阶段 3：初始化最终输出文件与序列长度检测机制
         // ------------------------------------------------------------------
-        FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
+        // FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
+        FilePath final_output_path = output;
         spdlog::info("mergeAlignedResults: stage3 (output) - writing final MSA FASTA: output='{}'",
                      final_output_path.string());
         seq_io::SeqWriter final_writer(final_output_path, U_MAX);
