@@ -197,7 +197,7 @@ static void runOnePerf(std::size_t n_seqs) {
 
 TEST_SUITE("consensus") {
 
-TEST_CASE("generateConsensusResult - keeps gap-majority consensus and writes ungapped consensus") {
+TEST_CASE("generateConsensusSequence - correctness (gap majority is ignored)") {
     auto dir = makeTempDirSimple();
     fs::path in_fa  = dir / "aligned.fasta";
     fs::path out_fa = dir / "consensus.fasta";
@@ -210,14 +210,13 @@ TEST_CASE("generateConsensusResult - keeps gap-majority consensus and writes ung
 
     writeTextFile(in_fa, aligned);
 
-    consensus::ConsensusResult result = consensus::generateConsensusResult(
+    std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
         0, 1
     );
 
-    CHECK(result.gap_seq == "ACGT-");
-    CHECK(result.seq == "ACGT");
-    CHECK(readSingleFastaSequence(out_fa) == "ACGT");
+    CHECK(cons == "ACGTA");
+    CHECK(readSingleFastaSequence(out_fa) == "ACGTA");
 
     std::error_code ec;
     CHECK(fs::exists(out_js, ec));
@@ -247,7 +246,7 @@ TEST_CASE("generateConsensusSequence - tie breaks to A (A > C > G > T > U)") {
     CHECK(readSingleFastaSequence(out_fa) == "A");
 }
 
-TEST_CASE("generateConsensusResult - all gaps stay only in gap consensus") {
+TEST_CASE("generateConsensusSequence - all gaps => consensus becomes A") {
     auto dir = makeTempDirSimple();
     fs::path in_fa  = dir / "aligned_allgap.fasta";
     fs::path out_fa = dir / "consensus_allgap.fasta";
@@ -260,14 +259,13 @@ TEST_CASE("generateConsensusResult - all gaps stay only in gap consensus") {
 
     writeTextFile(in_fa, aligned);
 
-    consensus::ConsensusResult result = consensus::generateConsensusResult(
+    std::string cons = consensus::generateConsensusSequence(
         in_fa, out_fa, out_js,
         0, 1
     );
 
-    CHECK(result.gap_seq == "---");
-    CHECK(result.seq.empty());
-    CHECK(readSingleFastaSequence(out_fa).empty());
+    CHECK(cons == "AAA");
+    CHECK(readSingleFastaSequence(out_fa) == "AAA");
 }
 
 TEST_CASE("generateConsensusSequence - single sequence returns same") {
